@@ -18,7 +18,7 @@ MR_EVT_SCAN_DISABLED:
 to keep scannning:
 GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
 
-
+[ ] logScan could go into multi_role_addScanInfo
 
 [ ] rm toggleLED (and timer)?
 

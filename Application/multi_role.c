@@ -675,7 +675,7 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
             NVS_getAttrs(nvsHandle, &regionAttrs);
             for (i = 0; i < numScanRes; i++)
             {
-                toggleLED(LED1); // only on scan
+                toggleLED(LED2); // only on scan
                 offset = logCount * JUXTA_LOG_SIZE;
                 if (offset < regionAttrs.regionSize - JUXTA_LOG_SIZE)
                 {
@@ -1629,52 +1629,53 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_DISABLED:
     {
-        uint8_t numReport;
-        uint8_t i;
-        static uint8_t *pAddrs = NULL;
-        uint8_t *pAddrTemp;
-#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
-        numReport = numScanRes;
-#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
-      GapScan_Evt_AdvRpt_t advRpt;
-
-      numReport = ((GapScan_Evt_End_t*) (pMsg->pData))->numReport;
-#endif // DEFAULT_DEV_DISC_BY_SVC_UUID
-
-//      Display_printf(dispHandle, MR_ROW_NON_CONN, 0,
-//                     "%d devices discovered", numReport);
-
-        if (pAddrs != NULL)
-        {
-            ICall_free(pAddrs);
-        }
-        // Allocate buffer to display addresses
-        pAddrs = ICall_malloc(numReport * MR_ADDR_STR_SIZE);
-        if (pAddrs == NULL)
-        {
-            numReport = 0;
-        }
-
-        if (pAddrs != NULL)
-        {
-            pAddrTemp = pAddrs;
-            for (i = 0; i < numReport; i++, pAddrTemp += MR_ADDR_STR_SIZE)
-            {
-#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
-                // Get the address from the list, convert it to string, and
-                // copy the string to the address buffer
-                memcpy(pAddrTemp, Util_convertBdAddr2Str(scanList[i].addr),
-                MR_ADDR_STR_SIZE);
-#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
-          // Get the address from the report, convert it to string, and
-          // copy the string to the address buffer
-          GapScan_getAdvReport(i, &advRpt);
-          memcpy(pAddrTemp, Util_convertBdAddr2Str(advRpt.addr),
-                 MR_ADDR_STR_SIZE);
-  #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
-            }
-        }
+//        uint8_t numReport;
+//        uint8_t i;
+//        static uint8_t *pAddrs = NULL;
+//        uint8_t *pAddrTemp;
+//#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
+//        numReport = numScanRes;
+//#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
+//      GapScan_Evt_AdvRpt_t advRpt;
+//
+//      numReport = ((GapScan_Evt_End_t*) (pMsg->pData))->numReport;
+//#endif // DEFAULT_DEV_DISC_BY_SVC_UUID
+//
+////      Display_printf(dispHandle, MR_ROW_NON_CONN, 0,
+////                     "%d devices discovered", numReport);
+//
+//        if (pAddrs != NULL)
+//        {
+//            ICall_free(pAddrs);
+//        }
+//        // Allocate buffer to display addresses
+//        pAddrs = ICall_malloc(numReport * MR_ADDR_STR_SIZE);
+//        if (pAddrs == NULL)
+//        {
+//            numReport = 0;
+//        }
+//
+//        if (pAddrs != NULL)
+//        {
+//            pAddrTemp = pAddrs;
+//            for (i = 0; i < numReport; i++, pAddrTemp += MR_ADDR_STR_SIZE)
+//            {
+//#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
+//                // Get the address from the list, convert it to string, and
+//                // copy the string to the address buffer
+//                memcpy(pAddrTemp, Util_convertBdAddr2Str(scanList[i].addr),
+//                MR_ADDR_STR_SIZE);
+//#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
+//          // Get the address from the report, convert it to string, and
+//          // copy the string to the address buffer
+//          GapScan_getAdvReport(i, &advRpt);
+//          memcpy(pAddrTemp, Util_convertBdAddr2Str(advRpt.addr),
+//                 MR_ADDR_STR_SIZE);
+//  #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
+//            }
+//        }
         // enabled if no connected, otherwise at GAP_LINK_TERMINATED_EVENT
+        logScan();
         if (numConn == 0)
         {
             numScanRes = 0;
