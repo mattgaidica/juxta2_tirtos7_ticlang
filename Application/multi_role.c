@@ -54,6 +54,8 @@
  * CONSTANTS
  */
 
+#define MAG_THRESHOLD_MG    30000
+
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
 #define MR_EVT_ADV_REPORT          2
@@ -312,7 +314,6 @@ static float acceleration_mg[3];
 static float magnetic_mG[3];
 static float temperature_degC;
 static uint8_t whoamI, rst;
-static uint8_t whoamibig[2];
 
 typedef struct
 {
@@ -608,9 +609,9 @@ static void blink(uint8_t runOnce)
 {
     while (1)
     {
-        GPIO_write(LED1, 1);
+        GPIO_write(LED2, 1);
         usleep(50000);
-        GPIO_write(LED1, 0);
+        GPIO_write(LED2, 0);
         usleep(50000);
         if (runOnce == 1)
         {
@@ -770,16 +771,34 @@ static void saveConfigs(void)
 
 static void juxta1HzTask()
 {
-//    GPIO_toggle(LED1);
-    setXL();
-    setMag();
-    setTemp();
-    if (abs(magnetic_mG[0]) + abs(magnetic_mG[1]) + abs(magnetic_mG[2]) > 20000) {
-        GPIO_write(LED1, 1);
-    } else {
-        GPIO_write(LED1, 0);
-    }
+    GPIO_toggle(LED1);
     localTime += 1;
+    uint32_t localTime_human = rev32(localTime);
+    SimpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, SIMPLEPROFILE_CHAR2_LEN,
+                               &localTime_human);
+
+    // ie, skip when connected
+    if (numConn == 0)
+    {
+        setXL();
+        setTemp();
+        // convert to interrupt?
+        if (GPIO_read(DRDY) == 1)
+        {
+            setMag();
+            lsm303agr_mag_operating_mode_set(&dev_ctx_mg,
+                                             LSM303AGR_SINGLE_TRIGGER);
+        }
+        if (fabs(magnetic_mG[0]) + fabs(magnetic_mG[1])
+                + fabs(magnetic_mG[2]) > MAG_THRESHOLD_MG)
+        {
+            GPIO_write(LED2, 1);
+        }
+        else
+        {
+            GPIO_write(LED2, 0);
+        }
+    }
 }
 
 static void modeCallback(uint8_t newMode)
@@ -787,13 +806,6 @@ static void modeCallback(uint8_t newMode)
 
 }
 
-/*********************************************************************
- * @fn      multi_role_spin
- *
- * @brief   Spin forever
- *
- * @param   none
- */
 static void multi_role_spin(void)
 {
     volatile uint8_t x = 0;
@@ -803,16 +815,6 @@ static void multi_role_spin(void)
         x++;
     }
 }
-
-/*********************************************************************
- * @fn      multi_role_createTask
- *
- * @brief   Task creation function for multi_role.
- *
- * @param   None.
- *
- * @return  None.
- */
 
 void multi_role_createTask(void)
 {
@@ -825,18 +827,6 @@ void multi_role_createTask(void)
     Task_construct(&mrTask, multi_role_taskFxn, &taskParams, NULL);
 }
 
-/*********************************************************************
- * @fn      multi_role_init
- *
- * @brief   Called during initialization and contains application
- *          specific initialization (ie. hardware initialization/setup,
- *          table initialization, power up notification, etc), and
- *          profile initialization/setup.
- *
- * @param   None.
- *
- * @return  None.
- */
 static void multi_role_init(void)
 {
     GPIO_init();
@@ -890,6 +880,8 @@ static void multi_role_init(void)
     /* Set Output Data Rate */
     lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz);
     lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz);
+    lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
+    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set accelerometer full scale */
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
     /* Set / Reset magnetic sensor mode */
@@ -902,7 +894,8 @@ static void multi_role_init(void)
     /* Set device in continuous mode */
     lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
     /* Set magnetometer in continuous mode */
-    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_CONTINUOUS_MODE);
+//    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
+    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
 
 //    modeCallback(juxtaMode); // resets sniff for JUXTA_MODE_AXY_LOGGER, stops sniff for others
 
@@ -939,7 +932,6 @@ static void multi_role_init(void)
     // Configure GAP
     {
         uint16_t paramUpdateDecision = DEFAULT_PARAM_UPDATE_REQ_DECISION;
-
         // Pass all parameter update requests to the app for it to decide
         GAP_SetParamValue(GAP_PARAM_LINK_UPDATE_DECISION, paramUpdateDecision);
     }
@@ -952,13 +944,9 @@ static void multi_role_init(void)
 #define APP_SUGGESTED_PDU_SIZE 251 //default is 27 octets(TX)
 #define APP_SUGGESTED_TX_TIME 2120 //default is 328us(TX)
 
-        // This API is documented in hci.h
-        // See the LE Data Length Extension section in the BLE5-Stack User's Guide for information on using this command:
-        // http://software-dl.ti.com/lprf/ble5stack-latest/
         HCI_LE_WriteSuggestedDefaultDataLenCmd(APP_SUGGESTED_PDU_SIZE,
                                                APP_SUGGESTED_TX_TIME);
     }
-
     // Initialize GATT Client, used by GAPBondMgr to look for RPAO characteristic for network privacy
 #ifdef __GNUC__
     GATT_InitClient("");
@@ -979,8 +967,6 @@ static void multi_role_init(void)
     SimpleProfile_AddService(GATT_ALL_SERVICES); // Simple GATT Profile
 
     // Setup the SimpleProfile Characteristic Values
-    // For more information, see the GATT and GATTServApp sections in the User's Guide:
-    // http://software-dl.ti.com/lprf/ble5stack-latest/
     {
         uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = { 0, 0, 0, 0 };
         uint32_t logCount_human = rev32(logCount);
@@ -1006,9 +992,7 @@ static void multi_role_init(void)
     // Start Bond Manager and register callback
     VOID GAPBondMgr_Register(&multi_role_BondMgrCBs);
 
-    // Register with GAP for HCI/Host messages. This is needed to receive HCI
-    // events. For more information, see the HCI section in the User's Guide:
-    // http://software-dl.ti.com/lprf/ble5stack-latest/
+    // Register with GAP for HCI/Host messages
     GAP_RegisterForMsgs(selfEntity);
 
     // Register for GATT local events and ATT Responses pending for transmission
@@ -1026,15 +1010,6 @@ static void multi_role_init(void)
 //    }
 }
 
-/*********************************************************************
- * @fn      multi_role_taskFxn
- *
- * @brief   Application task entry point for the multi_role.
- *
- * @param   a0, a1 - not used.
- *
- * @return  None.
- */
 static void multi_role_taskFxn(UArg a0, UArg a1)
 {
     // Initialize application
@@ -1102,15 +1077,6 @@ static void multi_role_taskFxn(UArg a0, UArg a1)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processStackMsg
- *
- * @brief   Process an incoming stack message.
- *
- * @param   pMsg - message to process
- *
- * @return  TRUE if safe to deallocate incoming message, FALSE otherwise.
- */
 static uint8_t multi_role_processStackMsg(ICall_Hdr *pMsg)
 {
     uint8_t safeToDealloc = TRUE;
@@ -1140,73 +1106,6 @@ static uint8_t multi_role_processStackMsg(ICall_Hdr *pMsg)
         case HCI_BLE_HARDWARE_ERROR_EVENT_CODE:
             AssertHandler(HAL_ASSERT_CAUSE_HARDWARE_ERROR, 0);
             break;
-
-            // HCI Commands Events
-        case HCI_COMMAND_STATUS_EVENT_CODE:
-        {
-            hciEvt_CommandStatus_t *pMyMsg = (hciEvt_CommandStatus_t*) pMsg;
-            switch (pMyMsg->cmdOpcode)
-            {
-            case HCI_LE_SET_PHY:
-            {
-                if (pMyMsg->cmdStatus ==
-                HCI_ERROR_CODE_UNSUPPORTED_REMOTE_FEATURE)
-                {
-//                    Display_printf(dispHandle, MR_ROW_CUR_CONN, 0,
-//                            "PHY Change failure, peer does not support this");
-                }
-                else
-                {
-//                    Display_printf(dispHandle, MR_ROW_CUR_CONN, 0,
-//                                   "PHY Update Status: 0x%02x",
-//                                   pMyMsg->cmdStatus);
-                }
-            }
-                break;
-            case HCI_DISCONNECT:
-                break;
-
-            default:
-            {
-//                  Display_printf(dispHandle, MR_ROW_NON_CONN, 0,
-//                                 "Unknown Cmd Status: 0x%04x::0x%02x",
-//                                 pMyMsg->cmdOpcode, pMyMsg->cmdStatus);
-            }
-                break;
-            }
-        }
-            break;
-
-            // LE Events
-        case HCI_LE_EVENT_CODE:
-        {
-            hciEvt_BLEPhyUpdateComplete_t *pPUC =
-                    (hciEvt_BLEPhyUpdateComplete_t*) pMsg;
-
-            if (pPUC->BLEEventCode == HCI_BLE_PHY_UPDATE_COMPLETE_EVENT)
-            {
-                if (pPUC->status != SUCCESS)
-                {
-
-//              Display_printf(dispHandle, MR_ROW_ANY_CONN, 0,
-//                             "%s: PHY change failure",
-//                             multi_role_getConnAddrStr(pPUC->connHandle));
-                }
-                else
-                {
-//              Display_printf(dispHandle, MR_ROW_ANY_CONN, 0,
-//                             "%s: PHY updated to %s",
-//                             multi_role_getConnAddrStr(pPUC->connHandle),
-//              // Only symmetrical PHY is supported.
-//              // rxPhy should be equal to txPhy.
-//                             (pPUC->rxPhy == PHY_UPDATE_COMPLETE_EVENT_1M) ? "1 Mbps" :
-//                             (pPUC->rxPhy == PHY_UPDATE_COMPLETE_EVENT_2M) ? "2 Mbps" :
-//                             (pPUC->rxPhy == PHY_UPDATE_COMPLETE_EVENT_CODED) ? "Coded" : "Unexpected PHY Value");
-                }
-            }
-
-            break;
-        }
 
         default:
             break;
@@ -1276,14 +1175,7 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 
         //Setup scanning
         multi_role_scanInit();
-
         mrMaxPduSize = pPkt->dataPktLen;
-
-        //Display initialized state status
-//      Display_printf(dispHandle, MR_ROW_NUM_CONN, 0, "Num Conns: %d", numConn);
-//      Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "Initialized");
-//      Display_printf(dispHandle, MR_ROW_MYADDRSS, 0, "Multi-Role Address: %s",(char *)Util_convertBdAddr2Str(pPkt->devAddr));
-
         break;
     }
 
@@ -1300,18 +1192,19 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         uint8_t role = ((gapEstLinkReqEvent_t*) pMsg)->connRole;
         uint8_t *pAddr = ((gapEstLinkReqEvent_t*) pMsg)->devAddr;
         uint8_t connIndex;
-        uint8_t *pStrAddr;
+//        uint8_t *pStrAddr;
 
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- got GAP_LINK_ESTABLISHED_EVENT", 0);
         // Add this connection info to the list
         connIndex = multi_role_addConnInfo(connHandle, pAddr, role);
+        GapScan_disable();
 
         // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
         MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
 
         connList[connIndex].charHandle = 0;
 
-        pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
+//        pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
 
 //      Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "Connected to %s", pStrAddr);
 //      Display_printf(dispHandle, MR_ROW_NUM_CONN, 0, "Num Conns: %d", numConn);
@@ -1346,12 +1239,9 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 
         pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
 
-//      Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "%s is disconnected",
-//                     pStrAddr);
-//      Display_printf(dispHandle, MR_ROW_NUM_CONN, 0, "Num Conns: %d", numConn);
-
         // Start advertising since there is room for more connections
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+        GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
 
         // If no active connections
         if (numConn == 0)
@@ -1452,21 +1342,10 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_scanInit
- *
- * @brief   Setup initial device scan settings.
- *
- * @return  None.
- */
 static void multi_role_scanInit(void)
 {
     uint8_t temp8;
     uint16_t temp16;
-
-    // Setup scanning
-    // For more information, see the GAP section in the User's Guide:
-    // http://software-dl.ti.com/lprf/ble5stack-latest/
 
     // Register callback to process Scanner events
     GapScan_registerCb(multi_role_scanCB, NULL);
@@ -1502,21 +1381,12 @@ static void multi_role_scanInit(void)
                         INIT_PHYPARAM_MIN_CONN_INT);
     GapInit_setPhyParam(DEFAULT_INIT_PHY, INIT_PHYPARAM_CONN_INT_MAX,
                         INIT_PHYPARAM_MAX_CONN_INT);
+    GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
 }
 
-/*********************************************************************
- * @fn      multi_role_advertInit
- *
- * @brief   Setup initial advertisment and start advertising from device init.
- *
- * @return  None.
- */
 static void multi_role_advertInit(void)
 {
     uint8_t status = FAILURE;
-    // Setup and start Advertising
-    // For more information, see the GAP section in the User's Guide:
-    // http://software-dl.ti.com/lprf/ble5stack-latest/
 
     BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- call GapAdv_create set=%d,%d\n", 1, 0);
     // Create Advertisement set #1 and assign handle
@@ -1557,13 +1427,6 @@ static void multi_role_advertInit(void)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_advCB
- *
- * @brief   GapAdv module callback
- *
- * @param   pMsg - message to process
- */
 static void multi_role_advCB(uint32_t event, void *pBuf, uintptr_t arg)
 {
     mrGapAdvEventData_t *pData = ICall_malloc(sizeof(mrGapAdvEventData_t));
@@ -1580,13 +1443,6 @@ static void multi_role_advCB(uint32_t event, void *pBuf, uintptr_t arg)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processGATTMsg
- *
- * @brief   Process GATT messages and events.
- *
- * @return  TRUE if safe to deallocate incoming message, FALSE otherwise.
- */
 static uint8_t multi_role_processGATTMsg(gattMsgEvent_t *pMsg)
 {
     // Get connection index from handle
@@ -1655,15 +1511,6 @@ static uint8_t multi_role_processGATTMsg(gattMsgEvent_t *pMsg)
     return (TRUE);
 }
 
-/*********************************************************************
- * @fn		multi_role_processParamUpdate
- *
- * @brief	Process connection parameters update
- *
- * @param	connHandle - connection handle to update
- *
- * @return	None.
- */
 static void multi_role_processParamUpdate(uint16_t connHandle)
 {
     gapUpdateLinkParamReq_t req;
@@ -1711,15 +1558,6 @@ static void multi_role_processParamUpdate(uint16_t connHandle)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processAppMsg
- *
- * @brief   Process an incoming callback from a profile.
- *
- * @param   pMsg - message to process
- *
- * @return  None.
- */
 static void multi_role_processAppMsg(mrEvt_t *pMsg)
 {
     bool safeToDealloc = TRUE;
@@ -1745,7 +1583,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         GapScan_Evt_AdvRpt_t *pAdvRpt = (GapScan_Evt_AdvRpt_t*) (pMsg->pData);
 
-#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
+        // do UUID filtering
         if (multi_role_findSvcUuid(SIMPLEPROFILE_SERV_UUID, pAdvRpt->pData,
                                    pAdvRpt->dataLen))
         {
@@ -1770,15 +1608,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
                     localTime = strtol((char*) newTime, NULL, 16);
                     blink(1);
                     blink(1);
-                    blink(1);
                     break;
                 }
             }
         }
-#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
-//      Display_printf(dispHandle, MR_ROW_CUR_CONN, 0, "Discovered: %s",
-//                     Util_convertBdAddr2Str(pAdvRpt->addr));
-#endif // DEFAULT_DEV_DISC_BY_SVC_UUID
 
         // Free scan payload data
         if (pAdvRpt->pData != NULL)
@@ -1841,6 +1674,12 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
   #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
             }
         }
+        // enabled if no connected, otherwise at GAP_LINK_TERMINATED_EVENT
+        if (numConn == 0)
+        {
+            numScanRes = 0;
+            GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
+        }
         break;
     }
 
@@ -1898,9 +1737,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_INSUFFICIENT_MEM:
     {
-        // We are running out of memory.
-//      Display_printf(dispHandle, MR_ROW_ANY_CONN, 0, "Insufficient Memory");
-
         // We might be in the middle of scanning, try stopping it.
 #ifdef __GNUC__
         GapScan_disable("");
@@ -1921,38 +1757,23 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processAdvEvent
- *
- * @brief   Process advertising event in app context
- *
- * @param   pEventData
- */
 static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 {
-    switch (pEventData->event)
+    switch (pEventData->event) // see: *(uint8_t *)(pEventData->pBuf
     {
     case GAP_EVT_ADV_START_AFTER_ENABLE:
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- GAP_EVT_ADV_START_AFTER_ENABLE", 0);
         mrIsAdvertising = true;
-//      Display_printf(dispHandle, MR_ROW_ADVERTIS, 0, "Adv Set %d Enabled",
-//                     *(uint8_t *)(pEventData->pBuf));
         break;
 
     case GAP_EVT_ADV_END_AFTER_DISABLE:
         mrIsAdvertising = false;
-//      Display_printf(dispHandle, MR_ROW_ADVERTIS, 0, "Adv Set %d Disabled",
-//                     *(uint8_t *)(pEventData->pBuf));
         break;
 
     case GAP_EVT_ADV_START:
-//      Display_printf(dispHandle, MR_ROW_ADVERTIS, 0, "Adv Started %d Enabled",
-//                     *(uint8_t *)(pEventData->pBuf));
         break;
 
     case GAP_EVT_ADV_END:
-//      Display_printf(dispHandle, MR_ROW_ADVERTIS, 0, "Adv Ended %d Disabled",
-//                     *(uint8_t *)(pEventData->pBuf));
         break;
 
     case GAP_EVT_ADV_SET_TERMINATED:
@@ -1985,13 +1806,7 @@ static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 }
 
 #if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
-/*********************************************************************
- * @fn      multi_role_findSvcUuid
- *
- * @brief   Find a given UUID in an advertiser's service UUID list.
- *
- * @return  TRUE if service UUID found
- */
+
 static bool multi_role_findSvcUuid(uint16_t uuid, uint8_t *pData,
                                    uint16_t dataLen)
 {
@@ -2054,13 +1869,6 @@ static bool multi_role_findSvcUuid(uint16_t uuid, uint8_t *pData,
     return FALSE;
 }
 
-/*********************************************************************
- * @fn      multi_role_addScanInfo
- *
- * @brief   Add a device to the scanned device list
- *
- * @return  none
- */
 static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
                                    int8_t rssi)
 {
@@ -2089,17 +1897,7 @@ static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
 }
 #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
 
-/*********************************************************************
- * @fn      multi_role_scanCB
- *
- * @brief   Callback called by GapScan module
- *
- * @param   evt - event
- * @param   msg - message coming with the event
- * @param   arg - user argument
- *
- * @return  none
- */
+
 void multi_role_scanCB(uint32_t evt, void *pMsg, uintptr_t arg)
 {
     uint8_t event;
@@ -2132,16 +1930,6 @@ void multi_role_scanCB(uint32_t evt, void *pMsg, uintptr_t arg)
 
 }
 
-/*********************************************************************
- * @fn      multi_role_charValueChangeCB
- *
- * @brief   Callback from Simple Profile indicating a characteristic
- *          value change.
- *
- * @param   paramID - parameter ID of the value that was changed.
- *
- * @return  None.
- */
 static void multi_role_charValueChangeCB(uint8_t paramID)
 {
     uint8_t *pData;
@@ -2159,17 +1947,6 @@ static void multi_role_charValueChangeCB(uint8_t paramID)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_enqueueMsg
- *
- * @brief   Creates a message and puts the message in RTOS queue.
- *
- * @param   event - message event.
- * @param   state - message state.
- * @param   pData - message data pointer.
- *
- * @return  TRUE or FALSE
- */
 static status_t multi_role_enqueueMsg(uint8_t event, void *pData)
 {
     uint8_t success;
@@ -2189,14 +1966,6 @@ static status_t multi_role_enqueueMsg(uint8_t event, void *pData)
     return (bleMemAllocError);
 }
 
-/*********************************************************************
- * @fn      multi_role_processCharValueChangeEvt
- *
- * @brief   Process a pending Simple Profile characteristic value change
- *          event.
- *
- * @param   paramID - parameter ID of the value that was changed.
- */
 static void multi_role_processCharValueChangeEvt(uint8_t paramId)
 {
     uint8_t len;
@@ -2248,16 +2017,6 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_updateRPA
- *
- * @brief   Read the current RPA from the stack and update display
- *          if the RPA has changed.
- *
- * @param   None.
- *
- * @return  None.
- */
 static void multi_role_updateRPA(void)
 {
     uint8_t *pRpaNew;
@@ -2267,22 +2026,10 @@ static void multi_role_updateRPA(void)
 
     if (memcmp(pRpaNew, rpa, B_ADDR_LEN))
     {
-        // If the RPA has changed, update the display
-//    Display_printf(dispHandle, MR_ROW_RPA, 0, "RP Addr: %s",
-//                   Util_convertBdAddr2Str(pRpaNew));
         memcpy(rpa, pRpaNew, B_ADDR_LEN);
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_clockHandler
- *
- * @brief   Handler function for clock timeouts.
- *
- * @param   arg - event type
- *
- * @return  None.
- */
 static void multi_role_clockHandler(UArg arg)
 {
     mrClockEventData_t *pData = (mrClockEventData_t*) arg;
@@ -2310,15 +2057,6 @@ static void multi_role_clockHandler(UArg arg)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processGATTDiscEvent
- *
- * @brief   Process GATT discovery event
- *
- * @param   pMsg - pointer to discovery event stack message
- *
- * @return  none
- */
 static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
 {
     uint8_t connIndex = multi_role_getConnIndex(pMsg->connHandle);
@@ -2398,16 +2136,6 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_getConnIndex
- *
- * @brief   Translates connection handle to index
- *
- * @param   connHandle - the connection handle
- *
- * @return  the index of the entry that has the given connection handle.
- *          if there is no match, MAX_NUM_BLE_CONNS will be returned.
- */
 static uint16_t multi_role_getConnIndex(uint16_t connHandle)
 {
     uint8_t i;
@@ -2426,15 +2154,6 @@ static uint16_t multi_role_getConnIndex(uint16_t connHandle)
 }
 
 #ifndef Display_DISABLE_ALL
-/*********************************************************************
- * @fn      multi_role_getConnAddrStr
- *
- * @brief   Return, in string form, the address of the peer associated with
- *          the connHandle.
- *
- * @return  A null-terminated string of the address.
- *          if there is no match, NULL will be returned.
- */
 static char* multi_role_getConnAddrStr(uint16_t connHandle)
 {
   uint8_t i;
@@ -2451,14 +2170,6 @@ static char* multi_role_getConnAddrStr(uint16_t connHandle)
 }
 #endif
 
-/*********************************************************************
- * @fn      multi_role_clearConnListEntry
- *
- * @brief   clear device list by connHandle
- *
- * @return  SUCCESS if connHandle found valid index or bleInvalidRange
- *          if index wasn't found. LINKDB_CONNHANDLE_ALL will always succeed.
- */
 static uint8_t multi_role_clearConnListEntry(uint16_t connHandle)
 {
     uint8_t i;
@@ -2489,17 +2200,6 @@ static uint8_t multi_role_clearConnListEntry(uint16_t connHandle)
     return SUCCESS;
 }
 
-/************************************************************************
- * @fn      multi_role_pairStateCB
- *
- * @param   connHandle - the connection handle
- *
- * @param   state - pairing state
- *
- * @param   status - status of pairing state
- *
- * @return  none
- */
 static void multi_role_pairStateCB(uint16_t connHandle, uint8_t state,
                                    uint8_t status)
 {
@@ -2520,23 +2220,6 @@ static void multi_role_pairStateCB(uint16_t connHandle, uint8_t state,
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_passcodeCB
- *
- * @brief   Passcode callback.
- *
- * @param   deviceAddr - pointer to device address
- *
- * @param   connHandle - the connection handle
- *
- * @param   uiInputs - pairing User Interface Inputs
- *
- * @param   uiOutputs - pairing User Interface Outputs
- *
- * @param   numComparison - numeric Comparison 20 bits
- *
- * @return  none
- */
 static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
                                   uint8_t uiInputs, uint8_t uiOutputs,
                                   uint32_t numComparison)
@@ -2560,15 +2243,6 @@ static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processPairState
- *
- * @brief   Process the new paring state.
- *
- * @param   pairingEvent - pairing event received from the stack
- *
- * @return  none
- */
 static void multi_role_processPairState(mrPairStateData_t *pPairData)
 {
     uint8_t state = pPairData->state;
@@ -2641,13 +2315,6 @@ static void multi_role_processPairState(mrPairStateData_t *pPairData)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_processPasscode
- *
- * @brief   Process the Passcode request.
- *
- * @return  none
- */
 static void multi_role_processPasscode(mrPasscodeData_t *pData)
 {
     // Display passcode to user
@@ -2661,13 +2328,6 @@ static void multi_role_processPasscode(mrPasscodeData_t *pData)
     GAPBondMgr_PasscodeRsp(pData->connHandle, SUCCESS, B_APP_DEFAULT_PASSCODE);
 }
 
-/*********************************************************************
- * @fn      multi_role_startSvcDiscovery
- *
- * @brief   Start service discovery.
- *
- * @return  none
- */
 static void multi_role_startSvcDiscovery(void)
 {
     uint8_t connIndex = multi_role_getConnIndex(mrConnHandle);
@@ -2690,17 +2350,6 @@ static void multi_role_startSvcDiscovery(void)
     VOID GATT_ExchangeMTU(mrConnHandle, &req, selfEntity);
 }
 
-/*********************************************************************
- * @fn      multi_role_addConnInfo
- *
- * @brief   add a new connection to the index-to-connHandle map
- *
- * @param   connHandle - the connection handle
- *
- * @param   addr - pointer to device address
- *
- * @return  index of connection handle
- */
 static uint8_t multi_role_addConnInfo(uint16_t connHandle, uint8_t *pAddr,
                                       uint8_t role)
 {
@@ -2764,15 +2413,6 @@ static uint8_t multi_role_addConnInfo(uint16_t connHandle, uint8_t *pAddr,
     return i;
 }
 
-/*********************************************************************
- * @fn      multi_role_clearPendingParamUpdate
- *
- * @brief   clean pending param update request in the paramUpdateList list
- *
- * @param   connHandle - connection handle to clean
- *
- * @return  none
- */
 void multi_role_clearPendingParamUpdate(uint16_t connHandle)
 {
     List_Elem *curr;
@@ -2787,15 +2427,6 @@ void multi_role_clearPendingParamUpdate(uint16_t connHandle)
     }
 }
 
-/*********************************************************************
- * @fn      multi_role_removeConnInfo
- *
- * @brief   Remove a device from the connected device list
- *
- * @return  index of the connected device list entry where the new connection
- *          info is removed from.
- *          if connHandle is not found, MAX_NUM_BLE_CONNS will be returned.
- */
 static uint8_t multi_role_removeConnInfo(uint16_t connHandle)
 {
     uint8_t connIndex = multi_role_getConnIndex(connHandle);

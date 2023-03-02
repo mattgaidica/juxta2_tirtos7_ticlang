@@ -26,10 +26,10 @@ const GPIO2        = GPIO.addInstance();
 const GPIO3        = GPIO.addInstance();
 const GPIO4        = GPIO.addInstance();
 const GPIO5        = GPIO.addInstance();
+const GPIO6        = GPIO.addInstance();
+const GPIO7        = GPIO.addInstance();
 const GPIO8        = GPIO.addInstance();
 const GPIO9        = GPIO.addInstance();
-const GPIO10       = GPIO.addInstance();
-const GPIO11       = GPIO.addInstance();
 const NVS          = scripting.addModule("/ti/drivers/NVS");
 const NVS1         = NVS.addInstance();
 const NVS2         = NVS.addInstance();
@@ -66,9 +66,16 @@ ble.addressMode                                           = "ADDRMODE_PUBLIC";
 ble.bondMITMProtection                                    = false;
 ble.disableDisplayModule                                  = true;
 ble.advRptFields                                          = ["SCAN_ADVRPT_FLD_ADDRESS","SCAN_ADVRPT_FLD_ADDRTYPE","SCAN_ADVRPT_FLD_RSSI"];
+ble.maxConnNum                                            = 1;
+ble.defaultTxPower                                        = "HCI_EXT_TX_POWER_5_DBM";
+ble.tbmActiveItemsOnly                                    = false;
+ble.dontTransmitNewRpa                                    = true;
+ble.radioConfig.codeExportConfig.$name                    = "ti_devices_radioconfig_code_export_param0";
 ble.connUpdateParamsPeripheral.$name                      = "ti_ble5stack_general_ble_conn_update_params0";
 ble.advSet1.$name                                         = "ti_ble5stack_broadcaster_advertisement_set0";
 ble.advSet1.advParam1.$name                               = "ti_ble5stack_broadcaster_advertisement_params0";
+ble.advSet1.advParam1.txPower                             = "otherTxPower";
+ble.advSet1.advParam1.txPowerValue                        = 5;
 ble.advSet1.advData1.$name                                = "ti_ble5stack_broadcaster_advertisement_data0";
 ble.advSet1.advData1.GAP_ADTYPE_FLAGS                     = true;
 ble.advSet1.advData1.advertisingFlags                     = ["GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED","GAP_ADTYPE_FLAGS_GENERAL"];
@@ -76,12 +83,10 @@ ble.advSet1.advData1.GAP_ADTYPE_16BIT_MORE                = true;
 ble.advSet1.advData1.numOfUUIDs16More                     = 1;
 ble.advSet1.advData1.UUID016More                          = 0xA2A2;
 ble.advSet1.scanRes1.$name                                = "ti_ble5stack_broadcaster_advertisement_data1";
-ble.advSet1.scanRes1.GAP_ADTYPE_LOCAL_NAME_COMPLETE       = true;
 ble.advSet1.scanRes1.GAP_ADTYPE_SLAVE_CONN_INTERVAL_RANGE = true;
 ble.advSet1.scanRes1.maxConnInterval                      = 130;
 ble.advSet1.scanRes1.GAP_ADTYPE_POWER_LEVEL               = true;
 ble.connUpdateParamsCentral.$name                         = "ti_ble5stack_general_ble_conn_update_params1";
-ble.radioConfig.codeExportConfig.$name                    = "ti_devices_radioconfig_code_export_param0";
 
 CCFG.xoscCapArrayDelta       = 0xC1;
 CCFG.enableBootloader        = true;
@@ -125,20 +130,20 @@ GPIO5.$name           = "DRDY";
 GPIO5.pull            = "Pull Up";
 GPIO5.gpioPin.$assign = "DIO_13";
 
-GPIO8.$name           = "CS_MAG";
-GPIO8.mode            = "Output";
-GPIO8.gpioPin.$assign = "DIO_14";
+GPIO6.$name           = "CS_MAG";
+GPIO6.mode            = "Output";
+GPIO6.gpioPin.$assign = "DIO_14";
 
-GPIO9.$name           = "CS_XL";
+GPIO7.$name           = "CS_XL";
+GPIO7.mode            = "Output";
+GPIO7.gpioPin.$assign = "DIO_16";
+
+GPIO8.$name           = "SDIO";
+GPIO8.gpioPin.$assign = "DIO_15";
+
+GPIO9.$name           = "SPC";
 GPIO9.mode            = "Output";
-GPIO9.gpioPin.$assign = "DIO_16";
-
-GPIO10.$name           = "SDIO";
-GPIO10.gpioPin.$assign = "DIO_15";
-
-GPIO11.$name           = "SPC";
-GPIO11.mode            = "Output";
-GPIO11.gpioPin.$assign = "DIO_17";
+GPIO9.gpioPin.$assign = "DIO_17";
 
 NVS1.$name                    = "CONFIG_NVSINTERNAL";
 NVS1.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX0";

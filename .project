@@ -26,11 +26,6 @@
 	</natures>
 	<linkedResources>
 		<link>
-			<name>Board.html</name>
-			<type>1</type>
-			<locationURI>COM_TI_SIMPLELINK_CC13XX_CC26XX_SDK_INSTALL_DIR/source/ti/boards/LP_CC1352P7_4/Board.html</locationURI>
-		</link>
-		<link>
 			<name>Juxta2Profiles</name>
 			<type>2</type>
 			<locationURI>PARENT-2-PROJECT_LOC/ESLO-Libraries/Juxta2Profiles</locationURI>
