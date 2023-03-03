@@ -334,6 +334,7 @@ GPIO_PinConfig sdioPinConfigs[2] = { GPIO_CFG_OUTPUT_INTERNAL
                                              | GPIO_CFG_IN_INT_NONE
                                              | GPIO_CFG_PULL_NONE_INTERNAL, /* INPUT */
 };
+static char newAddress[GAP_DEVICE_NAME_LEN] = "";
 
 //bool juxtaRadio = false;
 //uint8_t juxtaRadioCount = 0;
@@ -835,7 +836,6 @@ static void multi_role_init(void)
     // swap address to include BLE MAC address (unique for each device)
     uint64_t bleAddress = *((uint64_t*) (FCFG1_BASE + FCFG1_O_MAC_BLE_0))
             & 0xFFFFFFFFFFFF;
-    char newAddress[GAP_DEVICE_NAME_LEN] = ""; // +1 for null
     sprintf(newAddress, "JX_%llX", bleAddress); // use <4 chars as prepend
     memcpy(attDeviceName, newAddress, GAP_DEVICE_NAME_LEN);
 
@@ -1392,7 +1392,7 @@ static void multi_role_advertInit(void)
     // Create Advertisement set #1 and assign handle
     GapAdv_create(&multi_role_advCB, &advParams1, &advHandle);
 
-    // Load advertising data for set #1 that is statically allocated by the app
+    memcpy(advData1 + 2, newAddress, GAP_DEVICE_NAME_LEN);
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_ADV, sizeof(advData1),
                         advData1);
 
@@ -1589,8 +1589,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         {
             multi_role_addScanInfo(pAdvRpt->addr, pAdvRpt->addrType,
                                    pAdvRpt->rssi);
-//        Display_printf(dispHandle, MR_ROW_CUR_CONN, 0, "Discovered: %s",
-//                       Util_convertBdAddr2Str(pAdvRpt->addr));
         }
         if (multi_role_findSvcUuid(TIME_SERVICE_UUID, pAdvRpt->pData,
                                    pAdvRpt->dataLen))
@@ -1623,58 +1621,12 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_ENABLED:
     {
-//      Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "Discovering...");
+        // Discovering
         break;
     }
 
     case MR_EVT_SCAN_DISABLED:
     {
-//        uint8_t numReport;
-//        uint8_t i;
-//        static uint8_t *pAddrs = NULL;
-//        uint8_t *pAddrTemp;
-//#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
-//        numReport = numScanRes;
-//#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
-//      GapScan_Evt_AdvRpt_t advRpt;
-//
-//      numReport = ((GapScan_Evt_End_t*) (pMsg->pData))->numReport;
-//#endif // DEFAULT_DEV_DISC_BY_SVC_UUID
-//
-////      Display_printf(dispHandle, MR_ROW_NON_CONN, 0,
-////                     "%d devices discovered", numReport);
-//
-//        if (pAddrs != NULL)
-//        {
-//            ICall_free(pAddrs);
-//        }
-//        // Allocate buffer to display addresses
-//        pAddrs = ICall_malloc(numReport * MR_ADDR_STR_SIZE);
-//        if (pAddrs == NULL)
-//        {
-//            numReport = 0;
-//        }
-//
-//        if (pAddrs != NULL)
-//        {
-//            pAddrTemp = pAddrs;
-//            for (i = 0; i < numReport; i++, pAddrTemp += MR_ADDR_STR_SIZE)
-//            {
-//#if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
-//                // Get the address from the list, convert it to string, and
-//                // copy the string to the address buffer
-//                memcpy(pAddrTemp, Util_convertBdAddr2Str(scanList[i].addr),
-//                MR_ADDR_STR_SIZE);
-//#else // !DEFAULT_DEV_DISC_BY_SVC_UUID
-//          // Get the address from the report, convert it to string, and
-//          // copy the string to the address buffer
-//          GapScan_getAdvReport(i, &advRpt);
-//          memcpy(pAddrTemp, Util_convertBdAddr2Str(advRpt.addr),
-//                 MR_ADDR_STR_SIZE);
-//  #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
-//            }
-//        }
-        // enabled if no connected, otherwise at GAP_LINK_TERMINATED_EVENT
         logScan();
         if (numConn == 0)
         {
@@ -1760,7 +1712,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
 static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 {
-    switch (pEventData->event) // see: *(uint8_t *)(pEventData->pBuf
+    switch (pEventData->event)
+    // see: *(uint8_t *)(pEventData->pBuf
     {
     case GAP_EVT_ADV_START_AFTER_ENABLE:
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- GAP_EVT_ADV_START_AFTER_ENABLE", 0);
@@ -1897,7 +1850,6 @@ static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
     }
 }
 #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
-
 
 void multi_role_scanCB(uint32_t evt, void *pMsg, uintptr_t arg)
 {
