@@ -61,32 +61,31 @@ ble.deviceRole                                            = "PERIPHERAL_CFG+CENT
 ble.disDevBySerUuid                                       = true;
 ble.numOfAdvSets                                          = 1;
 ble.numOfDefAdvSets                                       = 1;
-ble.addressMode                                           = "ADDRMODE_PUBLIC";
 ble.bondMITMProtection                                    = false;
 ble.disableDisplayModule                                  = true;
 ble.advRptFields                                          = ["SCAN_ADVRPT_FLD_ADDRESS","SCAN_ADVRPT_FLD_ADDRTYPE","SCAN_ADVRPT_FLD_RSSI"];
 ble.maxConnNum                                            = 1;
 ble.defaultTxPower                                        = "HCI_EXT_TX_POWER_5_DBM";
 ble.tbmActiveItemsOnly                                    = false;
-ble.dontTransmitNewRpa                                    = true;
 ble.deviceName                                            = "JX_XXXXXXXXXXXXXXXXXX";
+ble.addressMode                                           = "ADDRMODE_PUBLIC";
+ble.paramUpdateReq                                        = "GAP_UPDATE_REQ_ACCEPT_ALL";
+ble.sendParamsUpdateReq                                   = false;
 ble.radioConfig.codeExportConfig.$name                    = "ti_devices_radioconfig_code_export_param0";
-ble.connUpdateParamsPeripheral.$name                      = "ti_ble5stack_general_ble_conn_update_params0";
 ble.advSet1.$name                                         = "ti_ble5stack_broadcaster_advertisement_set0";
 ble.advSet1.advParam1.$name                               = "ti_ble5stack_broadcaster_advertisement_params0";
-ble.advSet1.advParam1.txPower                             = "otherTxPower";
 ble.advSet1.advParam1.txPowerValue                        = 5;
 ble.advSet1.advData1.$name                                = "ti_ble5stack_broadcaster_advertisement_data0";
 ble.advSet1.advData1.GAP_ADTYPE_FLAGS                     = true;
 ble.advSet1.advData1.advertisingFlags                     = ["GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED","GAP_ADTYPE_FLAGS_GENERAL"];
 ble.advSet1.advData1.GAP_ADTYPE_16BIT_MORE                = true;
 ble.advSet1.advData1.numOfUUIDs16More                     = 1;
-ble.advSet1.advData1.UUID016More                          = 0xA2A2;
 ble.advSet1.advData1.GAP_ADTYPE_LOCAL_NAME_COMPLETE       = true;
+ble.advSet1.advData1.UUID016More                          = 0xFFF0;
 ble.advSet1.scanRes1.$name                                = "ti_ble5stack_broadcaster_advertisement_data1";
 ble.advSet1.scanRes1.GAP_ADTYPE_SLAVE_CONN_INTERVAL_RANGE = true;
-ble.advSet1.scanRes1.maxConnInterval                      = 130;
-ble.advSet1.scanRes1.GAP_ADTYPE_POWER_LEVEL               = true;
+ble.advSet1.scanRes1.minConnInterval                      = 7.5;
+ble.advSet1.scanRes1.maxConnInterval                      = 7.5;
 ble.connUpdateParamsCentral.$name                         = "ti_ble5stack_general_ble_conn_update_params1";
 
 CCFG.xoscCapArrayDelta       = 0xC1;
@@ -98,6 +97,7 @@ CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 
 rfdesign.fbSub1g = "none";
 rfdesign.pa20    = "none";
+rfdesign.fe24g   = "ID";
 
 AESCCM1.$name = "CONFIG_AESCCM0";
 
