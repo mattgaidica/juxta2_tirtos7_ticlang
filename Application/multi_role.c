@@ -886,6 +886,7 @@ static void multi_role_init(void)
     lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
     if (whoamI != LSM303AGR_ID_XL)
     {
+        lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
         blink(0); // not found
     }
 
