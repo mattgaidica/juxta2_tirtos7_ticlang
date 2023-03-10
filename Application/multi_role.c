@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <ti/drivers/ADC.h>
 #include <ti/sysbios/knl/Clock.h>
 #include <ti/sysbios/knl/Event.h>
 #include <ti/sysbios/knl/Queue.h>
@@ -32,18 +33,20 @@
 #include <ti/drivers/UART2.h>
 
 #include <icall.h>
-#include "util.h"
+#include <util.h>
 #include <bcomdef.h>
 /* This Header file contains all BLE API and icall structure definition */
 #include <icall_ble_api.h>
 
 #include <devinfoservice.h>
-#include "ti_ble_gatt_service.h"
+#include <ti_ble_gatt_service.h>
 #include <ti_drivers_config.h>
 
-#include "ti_ble_config.h"
-#include "multi_role.h"
-#include "lsm303agr_reg.h"
+#include <ti_ble_config.h>
+#include <multi_role.h>
+#include <lsm303agr_reg.h>
+#include <SPI_NAND.h>
+#include <Serialize.h>
 
 /*********************************************************************
  * MACROS
@@ -277,6 +280,7 @@ static mrConnRec_t connList[MAX_NUM_BLE_CONNS];
 
 // Advertising handles
 static uint8 advHandle;
+static uint8 advHandleExtended;
 
 static bool mrIsAdvertising = false;
 // Address mode
@@ -338,6 +342,17 @@ GPIO_PinConfig sdioPinConfigs[2] = { GPIO_CFG_OUTPUT_INTERNAL
 };
 static char newAddress[GAP_DEVICE_NAME_LEN] = "";
 uint32_t logOffset = 0;
+uint8_t dataBuffer[SIMPLEPROFILE_CHAR4_LEN] = { 0 };
+
+ADC_Handle adc_vBatt;
+ADC_Params adcParams_vBatt;
+int_fast16_t adcRes;
+uint16_t adcValue;
+uint32_t vbatt_uV;
+typedef enum
+{
+    JUXTA_LOG
+} juxtaDataType;
 
 //bool juxtaRadio = false;
 //uint8_t juxtaRadioCount = 0;
@@ -431,6 +446,43 @@ static gapBondCBs_t multi_role_BondMgrCBs = { multi_role_passcodeCB, // Passcode
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
+//ReturnType NAND_Write(uAddrType *esloAddr, uint8_t *esloBuffer,
+//        uint32_t esloVersion, eslo_dt eslo) {
+//    ReturnType ret = Flash_ProgramFailed;
+//    uint32_t packet;
+//
+//    ESLO_Packet(eslo, &packet);
+//
+//    if (*esloAddr >= FLASH_SIZE)
+//        ret = Flash_MemoryOverflow;
+//
+//    memcpy(esloBuffer + ADDRESS_2_COL(*esloAddr), &packet, 4);
+//    *esloAddr += 4;
+//
+//    if (ADDRESS_2_COL(*esloAddr) == PAGE_DATA_SIZE) { // end of page, write it
+//        if (ADDRESS_2_PAGE(*esloAddr) == 0) { // first page in block
+//            ret = FlashBlockErase(*esloAddr); // wipe 64 pages
+//            if (ret != Flash_Success) {
+//                return ret; // return early
+//            }
+//        }
+//
+//        (*esloAddr) &= 0xFFFFF000; // always write to 0th column index
+//        ret = FlashPageProgram(*esloAddr, esloBuffer, PAGE_DATA_SIZE); // write page
+//        (*esloAddr) += 0x00001000; // increment page
+//
+//        // fresh block, note: requires an intentional version write at startup
+//        if (ADDRESS_2_PAGE(*esloAddr) == 0) {
+//            eslo.type = Type_Version;
+//            eslo.data = esloVersion;
+//            ESLO_Packet(eslo, &packet);
+//            memcpy(esloBuffer + ADDRESS_2_COL(*esloAddr), &packet, 4);
+//            *esloAddr += 4;
+//        }
+//    }
+//
+//    return ret;
+//}
 static void setXL(void)
 {
     /* Read output only if new value is available */
@@ -774,6 +826,10 @@ static void juxta1HzTask()
     uint32_t localTime_human = rev32(localTime);
     simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, SIMPLEPROFILE_CHAR2_LEN,
                                &localTime_human);
+    adcRes = ADC_convert(adc_vBatt, &adcValue);
+    vbatt_uV = (ADC_convertToMicroVolts(adc_vBatt, adcValue) * 250) / 100;
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN,
+                               &vbatt_uV);
 
     // ie, skip when connected
     if (numConn == 0)
@@ -802,26 +858,37 @@ static void juxta1HzTask()
 static void dumpLogsBLE(uint8_t dataKey)
 {
     uint8_t doReset = 0;
-    if (dataKey == DATA_INIT_KEY)
+    uint8_t nLogs = SIMPLEPROFILE_CHAR4_LEN / (JUXTA_LOG_SIZE + 2); // number of logs + header
+    uint8_t iLog, iBuffer = 0;
+    if (dataKey == DATA_INIT_KEY && logOffset < logCount * JUXTA_LOG_SIZE)
     {
-        if (nvsDataHandle != NULL)
+        for (iLog = 0; iLog < nLogs; iLog++)
         {
-            if (logOffset < logCount * JUXTA_LOG_SIZE)
+            dataBuffer[iBuffer] = JUXTA_LOG;
+            iBuffer++;
+            dataBuffer[iBuffer] = JUXTA_LOG_SIZE;
+            iBuffer++;
+            NVS_read(nvsDataHandle, logOffset, dataBuffer + iBuffer,
+            JUXTA_LOG_SIZE);
+            iBuffer += JUXTA_LOG_SIZE;
+            logOffset = logOffset + JUXTA_LOG_SIZE;
+
+            if (logOffset >= logCount * JUXTA_LOG_SIZE)
             {
-                uint8_t data;
-                NVS_read(nvsDataHandle, logOffset, &data, sizeof(data));
-                simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4,
-                SIMPLEPROFILE_CHAR4_LEN,
-                                           &data);
-                GPIO_toggle(LED2);
-                logOffset++;
-            }
-            else // done, no notify
-            {
-                doReset = 1;
+                break;
             }
         }
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4,
+        SIMPLEPROFILE_CHAR4_LEN,
+                                   dataBuffer);
+        memset(dataBuffer, 0, sizeof(dataBuffer));
+        GPIO_toggle(LED2);
     }
+    else // done, no notify
+    {
+        doReset = 1;
+    }
+
     if (dataKey == DATA_EXIT_KEY || doReset == 1) // force reset
     {
         logOffset = 0;
@@ -886,15 +953,19 @@ static void multi_role_init(void)
     lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
     if (whoamI != LSM303AGR_ID_XL)
     {
+        lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
-        blink(0); // not found
+        blink(1); // not found, blink -> return
     }
 
     lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
+    whoamI = 0;
     lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
     if (whoamI != LSM303AGR_ID_MG)
     {
-        blink(0); // not found
+        lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
+        lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
+        blink(1);  // not found, blink -> return
     }
     /* Restore default configuration for magnetometer */
     lsm303agr_mag_reset_set(&dev_ctx_mg, PROPERTY_ENABLE);
@@ -926,6 +997,19 @@ static void multi_role_init(void)
     /* Set magnetometer in continuous mode */
 //    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
+
+    SPI_Params_init(&spiParams);
+    spiParams.bitRate = 1000000; // up to 10,000,000
+    spiParams.frameFormat = SPI_POL1_PHA1; // mode 3
+    SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
+
+    ADC_init();
+    ADC_Params_init(&adcParams_vBatt);
+    adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
+    if (adc_vBatt == NULL)
+    {
+        blink(0); // error
+    }
 
 //    modeCallback(juxtaMode); // resets sniff for JUXTA_MODE_AXY_LOGGER, stops sniff for others
 
@@ -962,15 +1046,15 @@ static void multi_role_init(void)
 // Configure GAP
     {
         uint16_t paramUpdateDecision = DEFAULT_PARAM_UPDATE_REQ_DECISION;
-        // Pass all parameter update requests to the app for it to decide
+// Pass all parameter update requests to the app for it to decide
         GAP_SetParamValue(GAP_PARAM_LINK_UPDATE_DECISION, paramUpdateDecision);
     }
 
 // Set default values for Data Length Extension
 // Extended Data Length Feature is already enabled by default
     {
-        // Set initial values to maximum, RX is set to max. by default(251 octets, 2120us)
-        // Some brand smartphone is essentially needing 251/2120, so we set them here.
+// Set initial values to maximum, RX is set to max. by default(251 octets, 2120us)
+// Some brand smartphone is essentially needing 251/2120, so we set them here.
 #define APP_SUGGESTED_PDU_SIZE 251 //default is 27 octets(TX)
 #define APP_SUGGESTED_TX_TIME 2120 //default is 328us(TX)
 
@@ -998,25 +1082,28 @@ static void multi_role_init(void)
 
 // Setup the SimpleProfile Characteristic Values
     {
-        uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = { 0, 0, 0, 0 };
+        uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = { 0 };
         uint32_t logCount_human = rev32(logCount);
         memcpy(charValue1, &logCount_human, sizeof(logCount_human));
 
-        uint8_t charValue2[SIMPLEPROFILE_CHAR2_LEN] = { 0, 0, 0, 0 };
+        uint8_t charValue2[SIMPLEPROFILE_CHAR2_LEN] = { 0 };
         uint32_t localTime_human = rev32(localTime);
         memcpy(charValue2, &localTime_human, sizeof(localTime_human));
 
         uint8_t charValue3 = juxtaMode;
-        uint8_t charValue4 = 0;
+        uint8_t charValue4[SIMPLEPROFILE_CHAR4_LEN] = { 0 };
+        uint8_t charValue5[SIMPLEPROFILE_CHAR5_LEN] = { 0 };
 
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
                                    charValue1);
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, SIMPLEPROFILE_CHAR2_LEN,
                                    charValue2);
-        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, sizeof(uint8_t),
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
                                    &charValue3);
-        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, sizeof(uint8_t),
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN,
                                    &charValue4);
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN,
+                                   &charValue5);
     }
 
 // Register callback with SimpleGATTprofile
@@ -1053,9 +1140,9 @@ static void multi_role_taskFxn(UArg a0, UArg a1)
     {
         uint32_t events;
 
-        // Waits for an event to be posted associated with the calling thread.
-        // Note that an event associated with a thread is posted when a
-        // message is queued to the message receive queue of the thread
+// Waits for an event to be posted associated with the calling thread.
+// Note that an event associated with a thread is posted when a
+// message is queued to the message receive queue of the thread
 
         events = Event_pend(syncEvent, Event_Id_NONE, MR_ALL_EVENTS,
         ICALL_TIMEOUT_FOREVER); // event_31 + event_30
@@ -1090,7 +1177,7 @@ static void multi_role_taskFxn(UArg a0, UArg a1)
                 }
             }
 
-            // If RTOS queue is not empty, process app message.
+// If RTOS queue is not empty, process app message.
             if (events & MR_QUEUE_EVT)
             {
                 while (!Queue_empty(appMsgQueue))
@@ -1119,18 +1206,18 @@ static uint8_t multi_role_processStackMsg(ICall_Hdr *pMsg)
     switch (pMsg->event)
     {
     case GAP_MSG_EVENT:
-        //multi_role_processRoleEvent((gapMultiRoleEvent_t *)pMsg);
+//multi_role_processRoleEvent((gapMultiRoleEvent_t *)pMsg);
         multi_role_processGapMsg((gapEventHdr_t*) pMsg);
         break;
 
     case GATT_MSG_EVENT:
-        // Process GATT message
+// Process GATT message
         safeToDealloc = multi_role_processGATTMsg((gattMsgEvent_t*) pMsg);
         break;
 
     case HCI_GAP_EVENT_EVENT:
     {
-        // Process HCI message
+// Process HCI message
         switch (pMsg->status)
         {
         case HCI_COMMAND_COMPLETE_EVENT_CODE:
@@ -1148,11 +1235,11 @@ static uint8_t multi_role_processStackMsg(ICall_Hdr *pMsg)
     }
 
     case L2CAP_SIGNAL_EVENT:
-        // place holder for L2CAP Connection Parameter Reply
+// place holder for L2CAP Connection Parameter Reply
         break;
 
     default:
-        // Do nothing
+// Do nothing
         break;
     }
 
@@ -1179,34 +1266,34 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- got GAP_DEVICE_INIT_DONE_EVENT", 0);
         if (pPkt->hdr.status == SUCCESS)
         {
-            // Store the system ID
+// Store the system ID
             uint8_t systemId[DEVINFO_SYSTEM_ID_LEN];
 
-            // use 6 bytes of device address for 8 bytes of system ID value
+// use 6 bytes of device address for 8 bytes of system ID value
             systemId[0] = pPkt->devAddr[0];
             systemId[1] = pPkt->devAddr[1];
             systemId[2] = pPkt->devAddr[2];
 
-            // set middle bytes to zero
+// set middle bytes to zero
             systemId[4] = 0x00;
             systemId[3] = 0x00;
 
-            // shift three bytes up
+// shift three bytes up
             systemId[7] = pPkt->devAddr[5];
             systemId[6] = pPkt->devAddr[4];
             systemId[5] = pPkt->devAddr[3];
 
-            // Set Device Info Service Parameter
+// Set Device Info Service Parameter
             DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN,
                                  systemId);
 
             BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- start advert %d,%d\n", 0, 0);
-            //Setup and start advertising
+//Setup and start advertising
             multi_role_advertInit();
 
         }
 
-        //Setup scanning
+//Setup scanning
         multi_role_scanInit();
         mrMaxPduSize = pPkt->dataPktLen;
         break;
@@ -1228,11 +1315,11 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 //        uint8_t *pStrAddr;
 
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- got GAP_LINK_ESTABLISHED_EVENT", 0);
-        // Add this connection info to the list
+// Add this connection info to the list
         connIndex = multi_role_addConnInfo(connHandle, pAddr, role);
         GapScan_disable();
 
-        // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
+// connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
         MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
 
         connList[connIndex].charHandle = 0;
@@ -1244,13 +1331,15 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 
         if (numConn < MAX_NUM_BLE_CONNS)
         {
-            // Start advertising since there is room for more connections
+// Start advertising since there is room for more connections
             GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+            GapAdv_enable(advHandleExtended, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
         }
         else
         {
-            // Stop advertising since there is no room for more connections
+// Stop advertising since there is no room for more connections
             GapAdv_disable(advHandle);
+            GapAdv_disable(advHandleExtended);
         }
         logOffset = 0; // fresh start for data dump
 
@@ -1265,19 +1354,20 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         uint8_t *pStrAddr;
 
         BLE_LOG_INT_STR(0, BLE_LOG_MODULE_APP, "APP : GAP msg: status=%d, opcode=%s\n", 0, "GAP_LINK_TERMINATED_EVENT");
-        // Mark this connection deleted in the connected device list.
+// Mark this connection deleted in the connected device list.
         connIndex = multi_role_removeConnInfo(connHandle);
 
-        // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
+// connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
         MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
 
         pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
 
-        // Start advertising since there is room for more connections
+// Start advertising since there is room for more connections
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+        GapAdv_enable(advHandleExtended, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
         GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
 
-        // If no active connections
+// If no active connections
         if (numConn == 0)
         {
         }
@@ -1294,8 +1384,8 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         rsp.connectionHandle = pReq->req.connectionHandle;
         rsp.signalIdentifier = pReq->req.signalIdentifier;
 
-        // Only accept connection intervals with slave latency of 0
-        // This is just an example of how the application can send a response
+// Only accept connection intervals with slave latency of 0
+// This is just an example of how the application can send a response
         if (pReq->req.connLatency == 0)
         {
             rsp.intervalMin = pReq->req.intervalMin;
@@ -1309,7 +1399,7 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
             rsp.accepted = FALSE;
         }
 
-        // Send Reply
+// Send Reply
         VOID GAP_UpdateLinkParamReqReply(&rsp);
 
         break;
@@ -1319,7 +1409,7 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
     {
         gapLinkUpdateEvent_t *pPkt = (gapLinkUpdateEvent_t*) pMsg;
 
-        // Get the address from the connection handle
+// Get the address from the connection handle
         linkDBInfo_t linkInfo;
         if (linkDB_GetInfo(pPkt->connectionHandle, &linkInfo) == SUCCESS)
         {
@@ -1339,15 +1429,15 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 //                           Util_convertBdAddr2Str(linkInfo.addr));
             }
         }
-        // Check if there are any queued parameter updates
+// Check if there are any queued parameter updates
         mrConnHandleEntry_t *connHandleEntry = (mrConnHandleEntry_t*) List_get(
                 &paramUpdateList);
         if (connHandleEntry != NULL)
         {
-            // Attempt to send queued update now
+// Attempt to send queued update now
             multi_role_processParamUpdate(connHandleEntry->connHandle);
 
-            // Free list element
+// Free list element
             ICall_free(connHandleEntry);
         }
         break;
@@ -1423,14 +1513,17 @@ static void multi_role_advertInit(void)
     uint8_t status = FAILURE;
 
     BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- call GapAdv_create set=%d,%d\n", 1, 0);
-// Create Advertisement set #1 and assign handle
+// Create Advertisement sets and assign handle
     GapAdv_create(&multi_role_advCB, &advParams1, &advHandle);
+    GapAdv_create(&multi_role_advCB, &advParams2, &advHandleExtended);
 
     memcpy(advData1 + 2, newAddress, GAP_DEVICE_NAME_LEN);
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_ADV, sizeof(advData1),
                         advData1);
+    GapAdv_loadByHandle(advHandleExtended, GAP_ADV_DATA_TYPE_ADV,
+                        sizeof(advData2), advData2);
 
-// Load scan response data for set #1 that is statically allocated by the app
+// Load scan response data for legacy, but not extended
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_SCAN_RSP,
                         sizeof(scanResData1), scanResData1);
 
@@ -1440,10 +1533,17 @@ static void multi_role_advertInit(void)
             GAP_ADV_EVT_MASK_START_AFTER_ENABLE
                     | GAP_ADV_EVT_MASK_END_AFTER_DISABLE
                     | GAP_ADV_EVT_MASK_SET_TERMINATED);
+    GapAdv_setEventMask(
+            advHandleExtended,
+            GAP_ADV_EVT_MASK_START_AFTER_ENABLE
+                    | GAP_ADV_EVT_MASK_END_AFTER_DISABLE
+                    | GAP_ADV_EVT_MASK_SET_TERMINATED);
 
     BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- GapAdv_enable", 0);
 // Enable legacy advertising for set #1
     status = GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+    status = GapAdv_enable(advHandleExtended, GAP_ADV_ENABLE_OPTIONS_USE_MAX,
+                           0);
 
     if (status != SUCCESS)
     {
@@ -1454,7 +1554,7 @@ static void multi_role_advertInit(void)
     if (addrMode > ADDRMODE_RANDOM)
     {
         multi_role_updateRPA();
-        // Create one-shot clock for RPA check event.
+// Create one-shot clock for RPA check event.
         Util_constructClock(&clkRpaRead, multi_role_clockHandler,
         READ_RPA_PERIOD,
                             0, true, (UArg) &argRpaRead);
@@ -1485,16 +1585,16 @@ static uint8_t multi_role_processGATTMsg(gattMsgEvent_t *pMsg)
 
     if (pMsg->method == ATT_FLOW_CTRL_VIOLATED_EVENT)
     {
-        // ATT request-response or indication-confirmation flow control is
-        // violated. All subsequent ATT requests or indications will be dropped.
-        // The app is informed in case it wants to drop the connection.
+// ATT request-response or indication-confirmation flow control is
+// violated. All subsequent ATT requests or indications will be dropped.
+// The app is informed in case it wants to drop the connection.
 
-        // Display the opcode of the message that caused the violation.
+// Display the opcode of the message that caused the violation.
 //    Display_printf(dispHandle, MR_ROW_CUR_CONN, 0, "FC Violated: %d", pMsg->msg.flowCtrlEvt.opcode);
     }
     else if (pMsg->method == ATT_MTU_UPDATED_EVENT)
     {
-        // MTU size updated
+// MTU size updated
 //    Display_printf(dispHandle, MR_ROW_CUR_CONN, 0, "MTU Size: %d", pMsg->msg.mtuEvt.MTU);
     }
 
@@ -1617,7 +1717,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         GapScan_Evt_AdvRpt_t *pAdvRpt = (GapScan_Evt_AdvRpt_t*) (pMsg->pData);
 
-        // do UUID filtering
+// do UUID filtering
         if (multi_role_findSvcUuid(SIMPLEPROFILE_SERV_UUID, pAdvRpt->pData,
                                    pAdvRpt->dataLen))
         {
@@ -1645,7 +1745,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             }
         }
 
-        // Free scan payload data
+// Free scan payload data
         if (pAdvRpt->pData != NULL)
         {
             ICall_free(pAdvRpt->pData);
@@ -1655,7 +1755,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_ENABLED:
     {
-        // Discovering
+// Discovering
         break;
     }
 
@@ -1696,7 +1796,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SEND_PARAM_UPDATE:
     {
-        // Extract connection handle from data
+// Extract connection handle from data
         uint16_t locConnHandle =
                 *(uint16_t*) (((mrClockEventData_t*) pMsg->pData)->data);
         multi_role_processParamUpdate(locConnHandle);
@@ -1724,7 +1824,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_INSUFFICIENT_MEM:
     {
-        // We might be in the middle of scanning, try stopping it.
+// We might be in the middle of scanning, try stopping it.
 #ifdef __GNUC__
         GapScan_disable("");
 #else
@@ -1734,7 +1834,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     }
 
     default:
-        // Do nothing.
+// Do nothing.
         break;
     }
 
@@ -1806,10 +1906,10 @@ static bool multi_role_findSvcUuid(uint16_t uuid, uint8_t *pData,
     {
         pEnd = pData + dataLen - 1;
 
-        // While end of data not reached
+// While end of data not reached
         while (pData < pEnd)
         {
-            // Get length of next AD item
+// Get length of next AD item
             adLen = *pData++;
             if (adLen > 0)
             {
@@ -1865,7 +1965,7 @@ static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
 // If result count not at max
     if (numScanRes < DEFAULT_MAX_SCAN_RES)
     {
-        // Check if device is already in scan results
+// Check if device is already in scan results
         for (i = 0; i < numScanRes; i++)
         {
             if (memcmp(pAddr, scanList[i].addr, B_ADDR_LEN) == 0)
@@ -1874,12 +1974,12 @@ static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
             }
         }
 
-        // Add addr to scan result list
+// Add addr to scan result list
         memcpy(scanList[numScanRes].addr, pAddr, B_ADDR_LEN);
         scanList[numScanRes].addrType = addrType;
         scanList[numScanRes].rssi = rssi;
 
-        // Increment scan result count
+// Increment scan result count
         numScanRes++;
     }
 }
@@ -1926,7 +2026,7 @@ static void multi_role_charValueChangeCB(uint8_t paramID)
     {
         *pData = paramID;
 
-        // Queue the event.
+// Queue the event.
         if (multi_role_enqueueMsg(MR_EVT_CHAR_CHANGE, pData) != SUCCESS)
         {
             ICall_free(pData);
@@ -1945,7 +2045,7 @@ static status_t multi_role_enqueueMsg(uint8_t event, void *pData)
         pMsg->event = event;
         pMsg->pData = pData;
 
-        // Enqueue the message.
+// Enqueue the message.
         success = Util_enqueueMsg(appMsgQueue, syncEvent, (uint8_t*) pMsg);
         return (success) ? SUCCESS : FAILURE;
     }
@@ -1967,11 +2067,12 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         len = SIMPLEPROFILE_CHAR2_LEN;
         break;
     case SIMPLEPROFILE_CHAR3:
-        len = sizeof(uint8_t);
+        len = SIMPLEPROFILE_CHAR2_LEN;
         break;
     case SIMPLEPROFILE_CHAR4:
-        len = sizeof(uint8_t);
+        len = SIMPLEPROFILE_CHAR4_LEN;
         break;
+    case SIMPLEPROFILE_CHAR5: // no writes
     default:
         break;
     }
@@ -2000,7 +2101,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR4, pValue);
         dumpLogsBLE(pValue[0]); // let fxn handle logic
         break;
-
+    case SIMPLEPROFILE_CHAR5: // no writes
     default:
 // should not reach here!
         break;
@@ -2030,15 +2131,15 @@ static void multi_role_clockHandler(UArg arg)
 
     if (pData->event == MR_EVT_READ_RPA)
     {
-        // Start the next period
+// Start the next period
         Util_startClock(&clkRpaRead);
 
-        // Send message to read the current RPA
+// Send message to read the current RPA
         multi_role_enqueueMsg(MR_EVT_READ_RPA, NULL);
     }
     else if (pData->event == MR_EVT_SEND_PARAM_UPDATE)
     {
-        // Send message to app
+// Send message to app
         multi_role_enqueueMsg(MR_EVT_SEND_PARAM_UPDATE, pData);
     }
     else if (pData->event == JUXTA_EVT_1HZ)
@@ -2058,7 +2159,7 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
 
     if (connList[connIndex].discState == BLE_DISC_STATE_MTU)
     {
-        // MTU size response received, discover simple service
+// MTU size response received, discover simple service
         if (pMsg->method == ATT_EXCHANGE_MTU_RSP)
         {
             uint8_t uuid[ATT_BT_UUID_SIZE] =
@@ -2067,14 +2168,14 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
 
             connList[connIndex].discState = BLE_DISC_STATE_SVC;
 
-            // Discovery simple service
+// Discovery simple service
             VOID GATT_DiscPrimaryServiceByUUID(pMsg->connHandle, uuid,
                                                ATT_BT_UUID_SIZE, selfEntity);
         }
     }
     else if (connList[connIndex].discState == BLE_DISC_STATE_SVC)
     {
-        // Service found, store handles
+// Service found, store handles
         if (pMsg->method == ATT_FIND_BY_TYPE_VALUE_RSP
                 && pMsg->msg.findByTypeValueRsp.numInfo > 0)
         {
@@ -2084,7 +2185,7 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
                     pMsg->msg.findByTypeValueRsp.pHandlesInfo, 0);
         }
 
-        // If procedure complete
+// If procedure complete
         if (((pMsg->method == ATT_FIND_BY_TYPE_VALUE_RSP)
                 && (pMsg->hdr.status == bleProcedureComplete))
                 || (pMsg->method == ATT_ERROR_RSP))
@@ -2108,22 +2209,22 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
     }
     else if (connList[connIndex].discState == BLE_DISC_STATE_CHAR)
     {
-        // Characteristic found, store handle
+// Characteristic found, store handle
         if ((pMsg->method == ATT_READ_BY_TYPE_RSP)
                 && (pMsg->msg.readByTypeRsp.numPairs > 0))
         {
             uint8_t connIndex = multi_role_getConnIndex(mrConnHandle);
 
-            // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
+// connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
             MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
 
-            // Store the handle of the simpleprofile characteristic 1 value
+// Store the handle of the simpleprofile characteristic 1 value
             connList[connIndex].charHandle = BUILD_UINT16(
                     pMsg->msg.readByTypeRsp.pDataList[3],
                     pMsg->msg.readByTypeRsp.pDataList[4]);
 
 //      Display_printf(dispHandle, MR_ROW_CUR_CONN, 0, "Simple Svc Found");
-            // Now we can use GATT Read/Write
+// Now we can use GATT Read/Write
         }
 
         connList[connIndex].discState = BLE_DISC_STATE_IDLE;
@@ -2136,7 +2237,7 @@ static uint16_t multi_role_getConnIndex(uint16_t connHandle)
 // Loop through connection
     for (i = 0; i < MAX_NUM_BLE_CONNS; i++)
     {
-        // If matching connection handle found
+// If matching connection handle found
         if (connList[i].connHandle == connHandle)
         {
             return i;
@@ -2173,7 +2274,7 @@ static uint8_t multi_role_clearConnListEntry(uint16_t connHandle)
     if (connHandle != LINKDB_CONNHANDLE_ALL)
     {
         connIndex = multi_role_getConnIndex(connHandle);
-        // Get connection index from handle
+// Get connection index from handle
         if (connIndex >= MAX_NUM_BLE_CONNS)
         {
             return bleInvalidRange;
@@ -2206,7 +2307,7 @@ static void multi_role_pairStateCB(uint16_t connHandle, uint8_t state,
         pData->connHandle = connHandle;
         pData->status = status;
 
-        // Queue the event.
+// Queue the event.
         if (multi_role_enqueueMsg(MR_EVT_PAIRING_STATE, pData) != SUCCESS)
         {
             ICall_free(pData);
@@ -2229,7 +2330,7 @@ static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
         pData->uiOutputs = uiOutputs;
         pData->numComparison = numComparison;
 
-        // Enqueue the event.
+// Enqueue the event.
         if (multi_role_enqueueMsg(MR_EVT_PASSCODE_NEEDED, pData) != SUCCESS)
         {
             ICall_free(pData);
@@ -2353,7 +2454,7 @@ static uint8_t multi_role_addConnInfo(uint16_t connHandle, uint8_t *pAddr,
     {
         if (connList[i].connHandle == LINKDB_CONNHANDLE_INVALID)
         {
-            // Found available entry to put a new connection info in
+// Found available entry to put a new connection info in
             connList[i].connHandle = connHandle;
             memcpy(connList[i].addr, pAddr, B_ADDR_LEN);
             numConn++;
@@ -2431,22 +2532,22 @@ static uint8_t multi_role_removeConnInfo(uint16_t connHandle)
 
         if (pUpdateClock != NULL)
         {
-            // Stop and destruct the RTOS clock if it's still alive
+// Stop and destruct the RTOS clock if it's still alive
             if (Util_isActive(pUpdateClock))
             {
                 Util_stopClock(pUpdateClock);
             }
 
-            // Destruct the clock object
+// Destruct the clock object
             Clock_destruct(pUpdateClock);
-            // Free clock struct
+// Free clock struct
             ICall_free(pUpdateClock);
-            // Free ParamUpdateEventData
+// Free ParamUpdateEventData
             ICall_free(connList[connIndex].pParamUpdateEventData);
         }
-        // Clear pending update requests from paramUpdateList
+// Clear pending update requests from paramUpdateList
         multi_role_clearPendingParamUpdate(connHandle);
-        // Clear Connection List Entry
+// Clear Connection List Entry
         multi_role_clearConnListEntry(connHandle);
         numConn--;
     }

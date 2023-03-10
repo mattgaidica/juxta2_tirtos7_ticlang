@@ -11,6 +11,8 @@
 const ble          = scripting.addModule("/ti/ble5stack/ble");
 const CCFG         = scripting.addModule("/ti/devices/CCFG");
 const rfdesign     = scripting.addModule("/ti/devices/radioconfig/rfdesign");
+const ADC          = scripting.addModule("/ti/drivers/ADC", {}, false);
+const ADC1         = ADC.addInstance();
 const AESCCM       = scripting.addModule("/ti/drivers/AESCCM");
 const AESCCM1      = AESCCM.addInstance();
 const AESCTRDRBG   = scripting.addModule("/ti/drivers/AESCTRDRBG");
@@ -59,7 +61,6 @@ const Timestamp    = scripting.addModule("/ti/sysbios/runtime/Timestamp");
  */
 ble.deviceRole                                            = "PERIPHERAL_CFG+CENTRAL_CFG";
 ble.disDevBySerUuid                                       = true;
-ble.numOfAdvSets                                          = 1;
 ble.numOfDefAdvSets                                       = 1;
 ble.bondMITMProtection                                    = false;
 ble.disableDisplayModule                                  = true;
@@ -71,10 +72,13 @@ ble.deviceName                                            = "JX_XXXXXXXXXXXXXXXX
 ble.addressMode                                           = "ADDRMODE_PUBLIC";
 ble.paramUpdateReq                                        = "GAP_UPDATE_REQ_ACCEPT_ALL";
 ble.sendParamsUpdateReq                                   = false;
+ble.maxPDUSize                                            = 255;
 ble.radioConfig.codeExportConfig.$name                    = "ti_devices_radioconfig_code_export_param0";
 ble.advSet1.$name                                         = "ti_ble5stack_broadcaster_advertisement_set0";
 ble.advSet1.advParam1.$name                               = "ti_ble5stack_broadcaster_advertisement_params0";
 ble.advSet1.advParam1.txPowerValue                        = 5;
+ble.advSet1.advParam1.primIntMin                          = 500;
+ble.advSet1.advParam1.primIntMax                          = 500;
 ble.advSet1.advData1.$name                                = "ti_ble5stack_broadcaster_advertisement_data0";
 ble.advSet1.advData1.GAP_ADTYPE_FLAGS                     = true;
 ble.advSet1.advData1.advertisingFlags                     = ["GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED","GAP_ADTYPE_FLAGS_GENERAL"];
@@ -87,6 +91,20 @@ ble.advSet1.scanRes1.GAP_ADTYPE_SLAVE_CONN_INTERVAL_RANGE = true;
 ble.advSet1.scanRes1.minConnInterval                      = 7.5;
 ble.advSet1.scanRes1.maxConnInterval                      = 7.5;
 ble.connUpdateParamsCentral.$name                         = "ti_ble5stack_general_ble_conn_update_params1";
+ble.advSet2.$name                                         = "ti_ble5stack_broadcaster_advertisement_set1";
+ble.advSet2.advParam2.$name                               = "ti_ble5stack_broadcaster_advertisement_params1";
+ble.advSet2.advParam2.advType                             = "extended";
+ble.advSet2.advParam2.primIntMin                          = 500;
+ble.advSet2.advParam2.primIntMax                          = 500;
+ble.advSet2.advData2.$name                                = "ti_ble5stack_broadcaster_advertisement_data2";
+ble.advSet2.advData2.GAP_ADTYPE_LOCAL_NAME_COMPLETE       = true;
+ble.advSet2.advData2.GAP_ADTYPE_FLAGS                     = true;
+ble.advSet2.advData2.advertisingFlags                     = ["GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED","GAP_ADTYPE_FLAGS_GENERAL"];
+ble.advSet2.advData2.GAP_ADTYPE_16BIT_MORE                = true;
+ble.advSet2.advData2.numOfUUIDs16More                     = 1;
+ble.advSet2.advData2.UUID016More                          = 0xFFF0;
+ble.advSet2.scanRes2.$name                                = "ti_ble5stack_broadcaster_advertisement_data3";
+scripting.suppress("The example app code handles 1 advertisement sets\\. Please make sure to update the example app code according to the configured number of sets\\.", ble, "numOfAdvSets");
 
 CCFG.xoscCapArrayDelta       = 0xC1;
 CCFG.enableBootloader        = true;
@@ -98,6 +116,8 @@ CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 rfdesign.fbSub1g = "none";
 rfdesign.pa20    = "none";
 rfdesign.fe24g   = "ID";
+
+ADC1.$name = "CONFIG_ADC_VBATT";
 
 AESCCM1.$name = "CONFIG_AESCCM0";
 
@@ -159,8 +179,8 @@ NVS3.$name                    = "NVS_JUXTA_CONFIG";
 NVS3.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX2";
 NVS3.internalFlash.regionBase = 0x26000;
 
-SPI1.$name               = "SPI_MEM";
 SPI1.mode                = "Four Pin SS Active Low";
+SPI1.$name               = "SPI_MEM_CONFIG";
 SPI1.spi.sclkPin.$assign = "DIO_9";
 SPI1.spi.misoPin.$assign = "DIO_6";
 SPI1.spi.mosiPin.$assign = "DIO_8";
@@ -221,6 +241,8 @@ System.supportModule   = "SysCallback";
  * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
  * re-solve from scratch.
  */
+ADC1.adc.$suggestSolution              = "ADC0";
+ADC1.adc.adcPin.$suggestSolution       = "DIO_23";
 SPI1.spi.$suggestSolution              = "SSI0";
 SPI1.spi.dmaRxChannel.$suggestSolution = "DMA_CH3";
 SPI1.spi.dmaTxChannel.$suggestSolution = "DMA_CH4";

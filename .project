@@ -36,9 +36,9 @@
 			<locationURI>PARENT-2-PROJECT_LOC/ESLO-Libraries/LSM303AGR</locationURI>
 		</link>
 		<link>
-			<name>NAND</name>
+			<name>NAND V2</name>
 			<type>2</type>
-			<locationURI>PARENT-2-PROJECT_LOC/ESLO-Libraries/NAND</locationURI>
+			<locationURI>PARENT-2-PROJECT_LOC/ESLO-Libraries/NAND%20V2</locationURI>
 		</link>
 		<link>
 			<name>Application/util.c</name>
