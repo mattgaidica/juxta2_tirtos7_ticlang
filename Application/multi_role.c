@@ -928,6 +928,7 @@ static void multi_role_init(void)
 {
     GPIO_init();
     GPIO_write(LED1, 1);
+    GPIO_write(LED2, 1);
     SPI_init();
     NVS_init();
     ADC_init();
@@ -1003,6 +1004,7 @@ static void multi_role_init(void)
 //    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
 
+    // note: this has to be in 3-wire so CS is manually controlled
     SPI_Params_init(&spiParams);
     SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
     has_NAND = NAND_Init();
