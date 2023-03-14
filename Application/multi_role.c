@@ -30,7 +30,7 @@
 #include <ti/drivers/GPIO.h>
 #include <ti/drivers/NVS.h>
 #include <ti/drivers/SPI.h>
-#include <ti/drivers/UART2.h>
+//#include <ti/drivers/UART2.h>
 
 #include <icall.h>
 #include <util.h>
@@ -348,7 +348,9 @@ ADC_Handle adc_vBatt;
 ADC_Params adcParams_vBatt;
 int_fast16_t adcRes;
 uint16_t adcValue;
-uint32_t vbatt_uV;
+uint32_t vbatt_uV = 0;
+uint8_t has_NAND, has_XL, has_MG = 0;
+
 typedef enum
 {
     JUXTA_LOG
@@ -926,6 +928,9 @@ static void multi_role_init(void)
 {
     GPIO_init();
     GPIO_write(LED1, 1);
+    SPI_init();
+    NVS_init();
+    ADC_init();
 
 // swap address to include BLE MAC address (unique for each device)
     uint64_t bleAddress = *((uint64_t*) (FCFG1_BASE + FCFG1_O_MAC_BLE_0))
@@ -933,12 +938,10 @@ static void multi_role_init(void)
     sprintf(newAddress, "JX_%llX", bleAddress); // use <4 chars as prepend
     memcpy(attDeviceName, newAddress, GAP_DEVICE_NAME_LEN);
 
-    NVS_init();
     nvsDataHandle = NVS_open(NVS_JUXTA_DATA, NULL);
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
     recallNVS();
 
-    SPI_init();
     dev_ctx_xl.write_reg = platform_write;
     dev_ctx_xl.read_reg = platform_read;
     dev_ctx_xl.handle = (void*) &xl_bus;
@@ -957,7 +960,7 @@ static void multi_role_init(void)
         lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
         blink(1); // not found, blink -> return
     }
-
+    has_XL = 1;
     lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
     whoamI = 0;
     lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
@@ -967,6 +970,7 @@ static void multi_role_init(void)
         lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
         blink(1);  // not found, blink -> return
     }
+    has_MG = 1;
     /* Restore default configuration for magnetometer */
     lsm303agr_mag_reset_set(&dev_ctx_mg, PROPERTY_ENABLE);
     do
@@ -974,6 +978,7 @@ static void multi_role_init(void)
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
     }
     while (rst);
+
 
     /* Enable Block Data Update */
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
@@ -999,17 +1004,11 @@ static void multi_role_init(void)
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
 
     SPI_Params_init(&spiParams);
-    spiParams.bitRate = 1000000; // up to 10,000,000
-    spiParams.frameFormat = SPI_POL1_PHA1; // mode 3
     SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
+    has_NAND = NAND_Init();
 
-    ADC_init();
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
-    if (adc_vBatt == NULL)
-    {
-        blink(0); // error
-    }
 
 //    modeCallback(juxtaMode); // resets sniff for JUXTA_MODE_AXY_LOGGER, stops sniff for others
 
@@ -1082,28 +1081,18 @@ static void multi_role_init(void)
 
 // Setup the SimpleProfile Characteristic Values
     {
-        uint8_t charValue1[SIMPLEPROFILE_CHAR1_LEN] = { 0 };
         uint32_t logCount_human = rev32(logCount);
-        memcpy(charValue1, &logCount_human, sizeof(logCount_human));
-
-        uint8_t charValue2[SIMPLEPROFILE_CHAR2_LEN] = { 0 };
         uint32_t localTime_human = rev32(localTime);
-        memcpy(charValue2, &localTime_human, sizeof(localTime_human));
-
-        uint8_t charValue3 = juxtaMode;
-        uint8_t charValue4[SIMPLEPROFILE_CHAR4_LEN] = { 0 };
-        uint8_t charValue5[SIMPLEPROFILE_CHAR5_LEN] = { 0 };
-
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
-                                   charValue1);
+                                   &logCount_human);
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2, SIMPLEPROFILE_CHAR2_LEN,
-                                   charValue2);
+                                   &localTime_human);
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
-                                   &charValue3);
+                                   &juxtaMode);
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN,
-                                   &charValue4);
+                                   dataBuffer);
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5, SIMPLEPROFILE_CHAR5_LEN,
-                                   &charValue5);
+                                   &vbatt_uV);
     }
 
 // Register callback with SimpleGATTprofile

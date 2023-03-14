@@ -23,7 +23,6 @@ const Board        = scripting.addModule("/ti/drivers/Board");
 const ECDH         = scripting.addModule("/ti/drivers/ECDH");
 const ECDH1        = ECDH.addInstance();
 const GPIO         = scripting.addModule("/ti/drivers/GPIO");
-const GPIO1        = GPIO.addInstance();
 const GPIO2        = GPIO.addInstance();
 const GPIO3        = GPIO.addInstance();
 const GPIO4        = GPIO.addInstance();
@@ -32,6 +31,8 @@ const GPIO6        = GPIO.addInstance();
 const GPIO7        = GPIO.addInstance();
 const GPIO8        = GPIO.addInstance();
 const GPIO9        = GPIO.addInstance();
+const GPIO10       = GPIO.addInstance();
+const GPIO16       = GPIO.addInstance();
 const NVS          = scripting.addModule("/ti/drivers/NVS");
 const NVS1         = NVS.addInstance();
 const NVS2         = NVS.addInstance();
@@ -90,7 +91,6 @@ ble.advSet1.scanRes1.$name                                = "ti_ble5stack_broadc
 ble.advSet1.scanRes1.GAP_ADTYPE_SLAVE_CONN_INTERVAL_RANGE = true;
 ble.advSet1.scanRes1.minConnInterval                      = 7.5;
 ble.advSet1.scanRes1.maxConnInterval                      = 7.5;
-ble.connUpdateParamsCentral.$name                         = "ti_ble5stack_general_ble_conn_update_params1";
 ble.advSet2.$name                                         = "ti_ble5stack_broadcaster_advertisement_set1";
 ble.advSet2.advParam2.$name                               = "ti_ble5stack_broadcaster_advertisement_params1";
 ble.advSet2.advParam2.advType                             = "extended";
@@ -104,6 +104,7 @@ ble.advSet2.advData2.GAP_ADTYPE_16BIT_MORE                = true;
 ble.advSet2.advData2.numOfUUIDs16More                     = 1;
 ble.advSet2.advData2.UUID016More                          = 0xFFF0;
 ble.advSet2.scanRes2.$name                                = "ti_ble5stack_broadcaster_advertisement_data3";
+ble.connUpdateParamsCentral.$name                         = "ti_ble5stack_general_ble_conn_update_params1";
 scripting.suppress("The example app code handles 1 advertisement sets\\. Please make sure to update the example app code according to the configured number of sets\\.", ble, "numOfAdvSets");
 
 CCFG.xoscCapArrayDelta       = 0xC1;
@@ -128,42 +129,47 @@ AESECB1.$name = "CONFIG_AESECB0";
 
 ECDH1.$name = "CONFIG_ECDH0";
 
-GPIO1.$name           = "LED1";
-GPIO1.mode            = "Output";
-GPIO1.outputStrength  = "Low";
-GPIO1.gpioPin.$assign = "DIO_22";
-
-GPIO2.$name           = "LED2";
+GPIO2.$name           = "LED1";
 GPIO2.mode            = "Output";
 GPIO2.outputStrength  = "Low";
-GPIO2.gpioPin.$assign = "DIO_5";
+GPIO2.gpioPin.$assign = "DIO_22";
 
-GPIO3.$name           = "INT_1_XL";
-GPIO3.pull            = "Pull Up";
-GPIO3.gpioPin.$assign = "DIO_18";
+GPIO3.$name           = "LED2";
+GPIO3.outputStrength  = "Low";
+GPIO3.mode            = "Output";
+GPIO3.gpioPin.$assign = "DIO_5";
 
-GPIO4.$name           = "INT_2_XL";
+GPIO4.$name           = "INT_1_XL";
 GPIO4.pull            = "Pull Up";
-GPIO4.gpioPin.$assign = "DIO_19";
+GPIO4.gpioPin.$assign = "DIO_18";
 
-GPIO5.$name           = "DRDY";
+GPIO5.$name           = "INT_2_XL";
 GPIO5.pull            = "Pull Up";
-GPIO5.gpioPin.$assign = "DIO_13";
+GPIO5.gpioPin.$assign = "DIO_19";
 
-GPIO6.$name           = "CS_MAG";
-GPIO6.mode            = "Output";
-GPIO6.gpioPin.$assign = "DIO_14";
+GPIO6.$name           = "DRDY";
+GPIO6.pull            = "Pull Up";
+GPIO6.gpioPin.$assign = "DIO_13";
 
-GPIO7.$name           = "CS_XL";
+GPIO7.$name           = "CS_MAG";
 GPIO7.mode            = "Output";
-GPIO7.gpioPin.$assign = "DIO_16";
+GPIO7.gpioPin.$assign = "DIO_14";
 
-GPIO8.$name           = "SDIO";
-GPIO8.gpioPin.$assign = "DIO_15";
+GPIO8.$name           = "CS_XL";
+GPIO8.mode            = "Output";
+GPIO8.gpioPin.$assign = "DIO_16";
 
-GPIO9.$name           = "SPC";
-GPIO9.mode            = "Output";
-GPIO9.gpioPin.$assign = "DIO_17";
+GPIO9.$name           = "SDIO";
+GPIO9.gpioPin.$assign = "DIO_15";
+
+GPIO10.$name           = "SPC";
+GPIO10.mode            = "Output";
+GPIO10.gpioPin.$assign = "DIO_17";
+
+GPIO16.$name              = "NAND_CS";
+GPIO16.mode               = "Output";
+GPIO16.initialOutputState = "High";
+GPIO16.outputStrength     = "Low";
 
 NVS1.$name                    = "CONFIG_NVSINTERNAL";
 NVS1.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX0";
@@ -179,12 +185,10 @@ NVS3.$name                    = "NVS_JUXTA_CONFIG";
 NVS3.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX2";
 NVS3.internalFlash.regionBase = 0x26000;
 
-SPI1.mode                = "Four Pin SS Active Low";
 SPI1.$name               = "SPI_MEM_CONFIG";
 SPI1.spi.sclkPin.$assign = "DIO_9";
 SPI1.spi.misoPin.$assign = "DIO_6";
 SPI1.spi.mosiPin.$assign = "DIO_8";
-SPI1.spi.ssPin.$assign   = "DIO_7";
 
 TRNG1.$name = "CONFIG_TRNG_0";
 
@@ -243,6 +247,7 @@ System.supportModule   = "SysCallback";
  */
 ADC1.adc.$suggestSolution              = "ADC0";
 ADC1.adc.adcPin.$suggestSolution       = "DIO_23";
+GPIO16.gpioPin.$suggestSolution        = "DIO_7";
 SPI1.spi.$suggestSolution              = "SSI0";
 SPI1.spi.dmaRxChannel.$suggestSolution = "DMA_CH3";
 SPI1.spi.dmaTxChannel.$suggestSolution = "DMA_CH4";
