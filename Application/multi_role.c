@@ -15,7 +15,6 @@
  * INCLUDES
  */
 #include <string.h>
-#include <stdio.h>
 #include <unistd.h>
 #include <ti/drivers/ADC.h>
 #include <ti/sysbios/knl/Clock.h>
@@ -59,6 +58,7 @@
 #define MAG_THRESHOLD_MG    30000
 #define DATA_INIT_KEY       0xFF
 #define DATA_EXIT_KEY       0x00
+#define NEW_DEVICE_ADDR_LEN advData1[0] - 1
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -340,6 +340,7 @@ GPIO_PinConfig sdioPinConfigs[2] = { GPIO_CFG_OUTPUT_INTERNAL
                                              | GPIO_CFG_IN_INT_NONE
                                              | GPIO_CFG_PULL_NONE_INTERNAL, /* INPUT */
 };
+
 static char newAddress[GAP_DEVICE_NAME_LEN] = "";
 uint32_t logOffset = 0;
 uint8_t dataBuffer[SIMPLEPROFILE_CHAR4_LEN] = { 0 };
@@ -928,7 +929,6 @@ static void multi_role_init(void)
 {
     GPIO_init();
     GPIO_write(LED1, 1);
-    GPIO_write(LED2, 1);
     SPI_init();
     NVS_init();
     ADC_init();
@@ -936,8 +936,16 @@ static void multi_role_init(void)
 // swap address to include BLE MAC address (unique for each device)
     uint64_t bleAddress = *((uint64_t*) (FCFG1_BASE + FCFG1_O_MAC_BLE_0))
             & 0xFFFFFFFFFFFF;
-    sprintf(newAddress, "JX_%llX", bleAddress); // use <4 chars as prepend
-    memcpy(attDeviceName, newAddress, GAP_DEVICE_NAME_LEN);
+    uint8_t bleArr[6], i;
+    for (i = 0; i < sizeof(bleArr); i++)
+    {
+        bleArr[i] = bleAddress >> 8 * i;
+    }
+    char *pStrAddr = Util_convertBdAddr2Str(bleArr); // size 13, includes 1 end char
+    memset(attDeviceName + 3, 0, sizeof(attDeviceName) - 3);
+    memcpy(attDeviceName + 3, pStrAddr, 12); // include JX_
+
+    GPIO_write(LED2, 1);
 
     nvsDataHandle = NVS_open(NVS_JUXTA_DATA, NULL);
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
@@ -979,7 +987,6 @@ static void multi_role_init(void)
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
     }
     while (rst);
-
 
     /* Enable Block Data Update */
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
@@ -1508,7 +1515,9 @@ static void multi_role_advertInit(void)
     GapAdv_create(&multi_role_advCB, &advParams1, &advHandle);
     GapAdv_create(&multi_role_advCB, &advParams2, &advHandleExtended);
 
-    memcpy(advData1 + 2, newAddress, GAP_DEVICE_NAME_LEN);
+    // replace the address in advData (created by SysConfig)
+    memcpy(advData1 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
+    memcpy(advData2 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_ADV, sizeof(advData1),
                         advData1);
     GapAdv_loadByHandle(advHandleExtended, GAP_ADV_DATA_TYPE_ADV,
