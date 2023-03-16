@@ -20,13 +20,6 @@ GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
 
 [ ] logScan could go into multi_role_addScanInfo
 
-[ ] rm toggleLED (and timer)?
-
-For gatt_builder:
-- Use SysConfig to configure
-- Copy/paste configs from juxta2_gatt_builder > 
-... Generated Source > SysConfig > ti_ble_gatt_service.h/c
-
 
 /*** from end ***/
 
