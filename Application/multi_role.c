@@ -55,11 +55,12 @@
  */
 
 #define MAG_THRESHOLD_MG    30000
-#define DATA_INIT_KEY       0xFF
-#define DATA_EXIT_KEY       0x00
+#define DUMP_RESET_KEY      0x00
+#define LOG_DUMP_KEY        0x11
+#define META_DUMP_KEY       0x22
 #define NEW_DEVICE_ADDR_LEN advData1[0] - 1
-#define JUXTA_BASE_LOGS     0
-#define JUXTA_BASE_XLMG     0x40000
+#define JUXTA_BASE_LOGS     0 // put logs here in NAND
+#define JUXTA_BASE_META     0x40000 // put meta here in NAND
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -79,19 +80,21 @@
 #define JUXTA_EVT_SUBHZ            15
 
 // Juxta NVS
-#define JUXTA_LOG_ENTRY_SIZE            17 //SIMPLEPROFILE_CHAR3_LEN // bytes
-#define JUXTA_META_ENTRY_SIZE           16 //
+#define JUXTA_LOG_ENTRY_SIZE            17
+#define JUXTA_META_ENTRY_SIZE           18
 
 #define JUXTA_CONFIG_OFFSET_LOGCOUNT    0 // uint32_t
 #define JUXTA_CONFIG_OFFSET_LOGADDR     1 // uint32_t
-#define JUXTA_CONFIG_SIZE               2 // number of all JUXTA_CONFIG_X
+#define JUXTA_CONFIG_OFFSET_METACOUNT   2
+#define JUXTA_CONFIG_OFFSET_METAADDR    3
+#define JUXTA_CONFIG_SIZE               4 // number of all JUXTA_CONFIG_X
 
 #define JUXTA_LED_TIMEOUT_PERIOD        1 // ms
 #define TIME_SERVICE_UUID               0xEFFE // see iOS > BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // us, Fs = 500kHz
 #define JUXTA_1HZ_PERIOD                1000 // ms
-#define JUXTA_SUBHZ_PERIOD              1000 * 60 // ms
+#define JUXTA_SUBHZ_PERIOD              1000 * 10 // ms
 
 // Internal Events for RTOS application
 #define MR_ICALL_EVT                         ICALL_MSG_EVENT_ID // Event_Id_31
@@ -309,6 +312,7 @@ typedef enum
 static uint8_t juxtaMode = JUXTA_MODE_AXY_LOGGER; //JUXTA_MODE_SHELF; // init mode
 
 NVS_Handle nvsConfigHandle;
+NVS_Handle nvsDataHandle;
 NVS_Attrs regionAttrs;
 static uint32_t nvsConfigBuffer[JUXTA_CONFIG_SIZE];
 static uint32_t localTime = 0;
@@ -342,7 +346,6 @@ GPIO_PinConfig sdioPinConfigs[2] = { GPIO_CFG_OUTPUT_INTERNAL
 };
 
 static char newAddress[GAP_DEVICE_NAME_LEN] = "";
-uint32_t logOffset = 0;
 uint8_t dataBuffer[SIMPLEPROFILE_CHAR4_LEN] = { 0 };
 
 ADC_Handle adc_vBatt;
@@ -352,14 +355,17 @@ static uint16_t data_raw_voltage;
 static uint32_t vbatt_uV = 0;
 static uint8_t has_NAND, has_XL, has_MG = 0;
 
-static uint32_t logAddr = 0; // recall from NVS
-static uint8_t logBuffer[PAGE_SIZE]; // 2176, PAGE_DATA_SIZE = 2048, use for R/W
-static uint32_t metaAddr = 0;
-static uint8_t metaBuffer[PAGE_SIZE];
+// addresses for NAND memory, tracked in NAND_Write()
+static uint32_t logAddr, metaAddr; // recall from NVS
+// counts track log/metaAddr but are atomic
+static uint32_t logCount, metaCount = 0;
+// volatile buffers for collection
+static uint8_t logBuffer[PAGE_SIZE], metaBuffer[PAGE_SIZE]; // 2176, PAGE_DATA_SIZE = 2048, use for R/W
+// entries = single units of collected data
 static uint8_t logEntry[JUXTA_LOG_ENTRY_SIZE];
 static uint8_t metaEntry[JUXTA_META_ENTRY_SIZE];
-static uint32_t logCount = 0;
-static uint32_t metaCount = 0;
+// variables used in the data dump process
+static uint32_t logDumpCount, logDumpAddr, metaDumpCount, metaDumpAddr = 0;
 
 typedef enum
 {
@@ -424,15 +430,13 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
                              uint16_t len);
 static void platform_delay(uint32_t ms);
 static void shutdownLEDs(void);
-static void toggleLED(uint8_t index);
-static void blink(uint8_t runOnce);
+static void timeoutLED(uint8_t index);
+static void blinkLED(uint8_t runOnce);
 static void loadConfigs(void);
 static void saveConfigs(void);
 static void setXL(void);
 static void setMag(void);
 static void setTemp(void);
-static void juxta1HzTask(void);
-static void dumpLog(void);
 static void modeCallback(uint8_t newMode);
 
 /*********************************************************************
@@ -471,6 +475,9 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
 
     for (i = 0; i < len; i++)
     {
+        memcpy(buffer + ADDRESS_2_COL(*addr), data + i, sizeof(uint8_t)); // add byte to buffer
+        *addr += 1;
+
         if (ADDRESS_2_COL(*addr) == PAGE_DATA_SIZE)
         { // end of page, write it
             if (ADDRESS_2_PAGE(*addr) == 0)
@@ -486,8 +493,6 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
             ret = FlashPageProgram(*addr, buffer, PAGE_DATA_SIZE); // write page
             (*addr) += 0x00001000; // increment page (2 * PAGE_DATA_SIZE)
         }
-        memcpy(buffer + ADDRESS_2_COL(*addr), data + i, sizeof(uint8_t)); // add byte to buffer
-        *addr += 1;
     }
 
     return ret;
@@ -657,7 +662,7 @@ static void platform_delay(uint32_t ms)
     usleep(ms * 1000);
 }
 
-static void toggleLED(uint8_t index)
+static void timeoutLED(uint8_t index)
 {
     if (index == LED1 || index == LED2)
     {
@@ -672,62 +677,20 @@ static void shutdownLEDs(void)
     GPIO_write(LED2, 0);
 }
 
-static void blink(uint8_t runOnce)
+static void blinkLED(uint8_t runOnce)
 {
     while (1)
     {
         GPIO_write(LED2, 1);
-        usleep(50000);
+        usleep(20000);
         GPIO_write(LED2, 0);
-        usleep(50000);
+        usleep(20000);
         if (runOnce == 1)
         {
             break;
         }
     }
 }
-
-//static void dumpLog(void)
-//{
-//    UART_init();
-//
-//    uint32_t i, offset;
-//    uint32_t logPos = 0;
-//    uint8_t flushByte = 0x99;
-//
-//    UART_Params uartParams;
-//    UART_Params_init(&uartParams);
-//    uartParams.baudRate = 9600;
-//    uart = UART_open(JUXTA_UART, &uartParams); // UART_close(uart);
-//    nvsHandle = NVS_open(NVS_JUXTA_DATA, NULL);
-//
-//    if (uart != NULL && nvsHandle != NULL)
-//    {
-//        // header, should send address
-//        for (i = 0; i < 10; i++)
-//        {
-//            UART_write(uart, &flushByte, sizeof(uint8_t));
-//            GPIO_toggle(LED_1);
-//        }
-//        UART_write(uart, attDeviceName, sizeof(attDeviceName));
-//        GPIO_toggle(LED_1);
-//
-//        while (logPos < logCount)
-//        {
-//            offset = logPos * JUXTA_LOG_SIZE;
-//            NVS_read(nvsHandle, offset, (void*) nvsDataBuffer,
-//                     sizeof(nvsDataBuffer));
-//            UART_write(uart, nvsDataBuffer, sizeof(nvsDataBuffer));
-//            GPIO_toggle(LED_1);
-//            logPos++;
-//        }
-//
-//        NVS_close(nvsHandle);
-//        UART_close(uart);
-//        GPIO_write(LED_1, 0);
-//    }
-//
-//}
 
 static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addScanInfo()
 {
@@ -738,8 +701,6 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
     {
         for (i = 0; i < numScanRes; i++)
         {
-            // clear buffer
-            memset(logEntry, 0, JUXTA_LOG_ENTRY_SIZE);
             // load buffer
             uint8_t uuid[ATT_BT_UUID_SIZE] =
                     { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
@@ -760,86 +721,30 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
         }
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
                                    &logCount);
+        timeoutLED(LED2);
         // saveConfigs()???
     }
-
-//    if (numScanRes > 0)
-//    {
-//        if (nvsDataHandle != NULL)
-//        {
-//            NVS_getAttrs(nvsDataHandle, &regionAttrs);
-//            for (i = 0; i < numScanRes; i++)
-//            {
-//                toggleLED(LED2); // only on scan
-//                offset = logCount * JUXTA_LOG_SIZE;
-//                if (offset < regionAttrs.regionSize - JUXTA_LOG_SIZE)
-//                {
-//                    // erase NVS if log is on start of sector
-//                    if (logCount == 0)
-//                    {
-//                        // erase all at once
-//                        for (k = 0;
-//                                k
-//                                        < regionAttrs.regionSize
-//                                                / regionAttrs.sectorSize; k++)
-//                        {
-//                            NVS_erase(nvsDataHandle, k * regionAttrs.sectorSize,
-//                                      regionAttrs.sectorSize);
-//                        }
-//                    }
-//
-//                    // clear buffer
-//                    memset(nvsDataBuffer, 0,
-//                    JUXTA_LOG_SIZE * sizeof(nvsDataBuffer[0]));
-//                    // load buffer
-//                    uint8_t uuid[ATT_BT_UUID_SIZE] = {
-//                            LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
-//                                    SIMPLEPROFILE_SERV_UUID) };
-//
-//                    memcpy(nvsDataBuffer + JUXTA_LOG_OFFSET_HEADER, uuid,
-//                           sizeof(uint16_t));
-//                    memcpy(nvsDataBuffer + JUXTA_LOG_OFFSET_LOGCOUNT, &logCount,
-//                           sizeof(logCount));
-//                    memcpy(nvsDataBuffer + JUXTA_LOG_OFFSET_SCANADDR,
-//                           scanList[i].addr, B_ADDR_LEN);
-//                    memcpy(nvsDataBuffer + JUXTA_LOG_OFFSET_RSSI,
-//                           &scanList[i].rssi, 1);
-//                    memcpy(nvsDataBuffer + JUXTA_LOG_OFFSET_TIME, &localTime,
-//                           sizeof(localTime));
-//
-//                    NVS_write(nvsDataHandle, offset, (void*) nvsDataBuffer,
-//                              sizeof(nvsDataBuffer),
-//                              NVS_WRITE_POST_VERIFY);
-//                    logCount++;
-//                }
-//            }
-//            saveConfigs(); // to increment log count
-//        }
-//    }
 }
 
 static void loadConfigs(void)
 {
-    // done by byte
-    NVS_read(nvsConfigHandle, JUXTA_CONFIG_OFFSET_LOGCOUNT, (void*) &logCount,
-             sizeof(logCount));
-    NVS_read(nvsConfigHandle, JUXTA_CONFIG_OFFSET_LOGADDR * 4, (void*) &logAddr,
-             sizeof(logAddr));
-    // check for first flash/new NVS space
-    uint8_t doSave = 0;
-    if (logAddr == 0xFFFFFFFF)
-    {
-        logAddr = 0;
-        doSave = 1;
-    }
-    if (logCount == 0xFFFFFFFF)
-    {
-        logCount = 0;
-        doSave = 1;
-    }
-    if (doSave)
-        saveConfigs();
 
+    NVS_read(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
+             sizeof(nvsConfigBuffer));
+    logCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT];
+    logAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR];
+    metaCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT];
+    metaAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR];
+
+    // check for first flash/new NVS space
+//    if (logCount | logAddr | metaCount | metaAddr == 0xFFFFFFFF)
+//    {
+//    }
+
+    NVS_read(nvsDataHandle, 0, (void*) logBuffer,
+    PAGE_DATA_SIZE);
+    NVS_read(nvsDataHandle, 0, (void*) metaBuffer,
+    PAGE_DATA_SIZE);
 }
 
 static void saveConfigs(void)
@@ -849,9 +754,18 @@ static void saveConfigs(void)
     // nvsConfigBuffer is uint32 (so is pointer that increments)
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT] = logCount;
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR] = logAddr;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT] = metaCount;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR] = metaAddr;
     NVS_write(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
               sizeof(nvsConfigBuffer),
               NVS_WRITE_POST_VERIFY);
+
+    NVS_getAttrs(nvsDataHandle, &regionAttrs);
+    NVS_erase(nvsDataHandle, 0, regionAttrs.sectorSize); // erase all each time
+    NVS_write(nvsDataHandle, 0, (void*) logBuffer, PAGE_DATA_SIZE,
+    NVS_WRITE_POST_VERIFY); // no offset
+    NVS_write(nvsDataHandle, PAGE_DATA_SIZE, (void*) metaBuffer, PAGE_DATA_SIZE,
+    NVS_WRITE_POST_VERIFY); // offset one page
 }
 
 static void juxtaSubHzTask(void)
@@ -895,6 +809,11 @@ static void juxta1HzTask(void)
 
         // write sequence
         int8_t iEntry;
+        uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(SIMPLEPROFILE_SERV_UUID),
+                                           HI_UINT16(SIMPLEPROFILE_SERV_UUID) };
+
+        memcpy(logEntry, uuid, sizeof(uuid));
+        iEntry += sizeof(uuid);
         // int16
         memcpy(metaEntry + iEntry, &data_raw_temperature,
                sizeof(data_raw_temperature));
@@ -909,52 +828,119 @@ static void juxta1HzTask(void)
         // int16[3]
         memcpy(metaEntry + iEntry, data_raw_magnetic,
                sizeof(data_raw_magnetic));
-//        NAND_Write(&metaAddr, metaBuffer, metaEntry, JUXTA_META_ENTRY_SIZE);
+        NAND_Write(&metaAddr, metaBuffer, metaEntry, JUXTA_META_ENTRY_SIZE);
         metaCount++;
-
-//        saveConfigs();
     }
 }
 
-static void dumpLogsBLE(uint8_t dataKey)
+static void dumpData(uint32_t *addr, uint32_t *dumpAddr, uint32_t *dumpCount,
+                     uint8_t *buffer, uint32_t BASE)
 {
-//    uint8_t doReset = 0;
-//    uint8_t nLogs = SIMPLEPROFILE_CHAR4_LEN / (JUXTA_LOG_SIZE + 2); // number of logs + header
-//    uint8_t iLog, iBuffer = 0;
-//    if (dataKey == DATA_INIT_KEY && logOffset < logCount * JUXTA_LOG_SIZE)
-//    {
-//        for (iLog = 0; iLog < nLogs; iLog++)
-//        {
-//            dataBuffer[iBuffer] = JUXTA_LOG;
-//            iBuffer++;
-//            dataBuffer[iBuffer] = JUXTA_LOG_SIZE;
-//            iBuffer++;
-//            NVS_read(nvsDataHandle, logOffset, dataBuffer + iBuffer,
-//            JUXTA_LOG_SIZE);
-//            iBuffer += JUXTA_LOG_SIZE;
-//            logOffset = logOffset + JUXTA_LOG_SIZE;
-//
-//            if (logOffset >= logCount * JUXTA_LOG_SIZE)
-//            {
-//                break;
-//            }
-//        }
-//        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4,
-//        SIMPLEPROFILE_CHAR4_LEN,
-//                                   dataBuffer);
-//        memset(dataBuffer, 0, sizeof(dataBuffer));
-//        GPIO_toggle(LED2);
-//    }
-//    else // done, no notify
-//    {
-//        doReset = 1;
-//    }
-//
-//    if (dataKey == DATA_EXIT_KEY || doReset == 1) // force reset
-//    {
-//        logOffset = 0;
-//        GPIO_write(LED2, 0);
-//    }
+    if (*dumpAddr < *addr)
+    {
+        // at start: write the existing buffer to NAND, fill remaining page with 0xFF
+        if (*dumpAddr == BASE && *dumpCount == 0)
+        {
+            uint32_t restoreAddr = *addr;
+            uint8_t none = 0xFF;
+            while (1)
+            {
+                ReturnType ret = NAND_Write(addr, buffer, &none, 1);
+                if (ret == Flash_Success)
+                    break;
+            }
+            *addr = restoreAddr; // put logAddr back to where it was
+        }
+        // logDumpCount increments by 128 (SIMPLEPROFILE_CHAR4_LEN): goes to zero every page
+        if (*dumpCount == 0)
+        {
+            FlashPageRead(*dumpAddr, buffer);
+        }
+        memcpy(dataBuffer, buffer + (SIMPLEPROFILE_CHAR4_LEN * *dumpCount),
+        SIMPLEPROFILE_CHAR4_LEN);
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4,
+        SIMPLEPROFILE_CHAR4_LEN,
+                                   dataBuffer);
+        *dumpCount = *dumpCount + 1; // should iterate 16 times for each page
+        if (*dumpCount == PAGE_DATA_SIZE / SIMPLEPROFILE_CHAR4_LEN)
+        {
+            *dumpCount = 0; // reset to read page next time
+            *dumpAddr += 0x1000; // this increments until logAddr
+        }
+    }
+}
+
+static void dumpMeta(void)
+{
+    if (metaDumpAddr < metaAddr)
+    {
+        // at start: write the existing buffer to NAND, fill remaining page with 0xFF
+        if (metaDumpAddr == JUXTA_BASE_META && metaDumpCount == 0)
+        {
+            uint32_t restoreAddr = metaAddr;
+            uint8_t none = 0xFF;
+            while (1)
+            {
+                ReturnType ret = NAND_Write(&metaAddr, metaBuffer, &none, 1);
+                if (ret == Flash_Success)
+                    break;
+            }
+            metaAddr = restoreAddr; // put logAddr back to where it was
+        }
+        // logDumpCount increments by 128 (SIMPLEPROFILE_CHAR4_LEN): goes to zero every page
+        if (metaDumpCount == 0)
+        {
+            FlashPageRead(metaDumpAddr, metaBuffer);
+        }
+        memcpy(dataBuffer,
+               metaBuffer + (SIMPLEPROFILE_CHAR4_LEN * metaDumpCount),
+               SIMPLEPROFILE_CHAR4_LEN);
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4,
+        SIMPLEPROFILE_CHAR4_LEN,
+                                   dataBuffer);
+        metaDumpCount++; // should iterate 16 times for each page
+        if (metaDumpCount == PAGE_DATA_SIZE / SIMPLEPROFILE_CHAR4_LEN)
+        {
+            metaDumpCount = 0; // reset to read page next time
+            metaDumpAddr += 0x1000; // this increments until logAddr
+        }
+    }
+}
+
+static void dumpLogs(void)
+{
+    if (logDumpAddr < logAddr)
+    {
+        // at start: write the existing buffer to NAND, fill remaining page with 0xFF
+        if (logDumpAddr == JUXTA_BASE_LOGS && logDumpCount == 0)
+        {
+            uint32_t restoreAddr = logAddr;
+            uint8_t none = 0xFF;
+            while (1)
+            {
+                ReturnType ret = NAND_Write(&logAddr, logBuffer, &none, 1);
+                if (ret == Flash_Success)
+                    break;
+            }
+            logAddr = restoreAddr; // put logAddr back to where it was
+        }
+        // logDumpCount increments by 128 (SIMPLEPROFILE_CHAR4_LEN): goes to zero every page
+        if (logDumpCount == 0)
+        {
+            FlashPageRead(logDumpAddr, logBuffer);
+        }
+        memcpy(dataBuffer, logBuffer + (SIMPLEPROFILE_CHAR4_LEN * logDumpCount),
+        SIMPLEPROFILE_CHAR4_LEN);
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4,
+        SIMPLEPROFILE_CHAR4_LEN,
+                                   dataBuffer);
+        logDumpCount++; // should iterate 16 times for each page
+        if (logDumpCount == PAGE_DATA_SIZE / SIMPLEPROFILE_CHAR4_LEN)
+        {
+            logDumpCount = 0; // reset to read page next time
+            logDumpAddr += 0x1000; // this increments until logAddr
+        }
+    }
 }
 
 static void modeCallback(uint8_t newMode)
@@ -1006,6 +992,7 @@ static void multi_role_init(void)
     GPIO_write(LED2, 1);
 
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
+    nvsDataHandle = NVS_open(NVS_JUXTA_DATA, NULL);
     // !! check for null handles?
     loadConfigs();
 
@@ -1025,7 +1012,7 @@ static void multi_role_init(void)
     {
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
-        blink(1); // not found, blink -> return
+        blinkLED(1); // not found, blink -> return
     }
     has_XL = 1;
     lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
@@ -1035,7 +1022,7 @@ static void multi_role_init(void)
     {
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
-        blink(1);  // not found, blink -> return
+        blinkLED(1);  // not found, blink -> return
     }
     has_MG = 1;
     /* Restore default configuration for magnetometer */
@@ -1189,10 +1176,6 @@ static void multi_role_init(void)
     Util_constructClock(&clkJuxtaLEDTimeout, multi_role_clockHandler,
     JUXTA_LED_TIMEOUT_PERIOD,
                         0, false, (UArg) &argJuxtaLEDTimeout);
-//    if (GPIO_read(DEBUG) == 0)
-//    {
-//        dumpLog();
-//    }
 }
 
 static void multi_role_taskFxn(UArg a0, UArg a1)
@@ -1406,7 +1389,10 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
             GapAdv_disable(advHandle);
             GapAdv_disable(advHandleExtended);
         }
-        logOffset = 0; // fresh start for data dump
+        logDumpCount = 0;
+        logDumpAddr = JUXTA_BASE_LOGS;
+        metaDumpCount = 0;
+        metaDumpAddr = JUXTA_BASE_META;
 
         break;
     }
@@ -1805,8 +1791,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
                     memcpy(newTime, pAdvRpt->pData + svcLoc + 4,
                            sizeof(newTime));
                     localTime = strtol((char*) newTime, NULL, 16);
-                    blink(1);
-                    blink(1);
+                    blinkLED(1);
+                    blinkLED(1);
                     break;
                 }
             }
@@ -2157,16 +2143,16 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
 // only characteristics with GATT_PROP_WRITE, all others are written elsewhere
     case SIMPLEPROFILE_CHAR1:
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR1, pValue);
-//        memcpy(&logCount, pValue, sizeof(uint32_t)); // these should come in MSB from iOS app
-        logAddr = 0; // !! needs separate logic?
-        metaAddr = 0;
-        logCount = 0; // how about any write event = set to 0?
+        // treat any write as erasing memory
+        logCount = 0;
+        logAddr = JUXTA_BASE_LOGS;
         metaCount = 0;
-//        saveConfigs(); // write log count
+        metaAddr = JUXTA_BASE_META;
+        saveConfigs();
         break;
     case SIMPLEPROFILE_CHAR2:
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR2, pValue);
-        memcpy(&localTime, pValue, sizeof(uint32_t)); // this needs to be reversed, comes MSB from iOS
+        memcpy(&localTime, pValue, sizeof(uint32_t));
         break;
     case SIMPLEPROFILE_CHAR3:
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR3, pValue);
@@ -2174,7 +2160,24 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         break;
     case SIMPLEPROFILE_CHAR4:
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR4, pValue);
-        dumpLogsBLE(pValue[0]); // !! needs to dump BLE/Axy/Etc?
+        if (pValue[0] == LOG_DUMP_KEY)
+        {
+//            dumpLogs();
+            dumpData(&metaAddr, &metaDumpAddr, &metaDumpCount, metaBuffer,
+                     JUXTA_BASE_META);
+        }
+        else if (pValue[0] == META_DUMP_KEY)
+        {
+            dumpMeta();
+        }
+        else if (pValue[0] == DUMP_RESET_KEY)
+        {
+            // dump from beginning
+            logDumpCount = 0;
+            logDumpAddr = JUXTA_BASE_LOGS;
+            metaDumpCount = 0;
+            metaDumpAddr = JUXTA_BASE_META;
+        }
         break;
     case SIMPLEPROFILE_CHAR5: // no writes
     default:
