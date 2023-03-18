@@ -476,25 +476,23 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
     for (i = 0; i < len; i++)
     {
         memcpy(buffer + ADDRESS_2_COL(*addr), data + i, sizeof(uint8_t)); // add byte to buffer
-        *addr += 1;
-
-        if (ADDRESS_2_COL(*addr) == PAGE_DATA_SIZE)
-        { // end of page, write it
-            if (ADDRESS_2_PAGE(*addr) == 0)
-            { // first page in block
-                ret = FlashBlockErase(*addr); // wipe 64 pages
-                if (ret != Flash_Success)
-                {
-                    return ret; // return early
-                }
+        // check if area needs to be erased
+        if (ADDRESS_2_PAGE(*addr) == 0 && ADDRESS_2_COL(*addr) == 0) // 0th page in block, 0th col
+        {
+            ret = FlashBlockErase(*addr); // wipe 64 pages
+            if (ret != Flash_Success)
+            {
+                return ret; // return early
             }
-
-            (*addr) &= 0xFFFFF000; // always write to 0th column index
+        }
+        *addr += 1;
+        if (ADDRESS_2_COL(*addr) == PAGE_DATA_SIZE) // end of page/last col: write it
+        {
+            (*addr) &= 0xFFFFF000; // force write to 0th column index
             ret = FlashPageProgram(*addr, buffer, PAGE_DATA_SIZE); // write page
             (*addr) += 0x00001000; // increment page (2 * PAGE_DATA_SIZE)
         }
     }
-
     return ret;
 }
 
