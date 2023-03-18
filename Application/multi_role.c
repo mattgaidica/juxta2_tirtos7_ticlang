@@ -83,8 +83,8 @@
 #define JUXTA_LOG_ENTRY_SIZE            13
 #define JUXTA_META_ENTRY_SIZE           22
 
-#define JUXTA_CONFIG_OFFSET_LOGCOUNT    0 // uint32_t
-#define JUXTA_CONFIG_OFFSET_LOGADDR     1 // uint32_t
+#define JUXTA_CONFIG_OFFSET_LOGCOUNT    0 // all uint32_t
+#define JUXTA_CONFIG_OFFSET_LOGADDR     1
 #define JUXTA_CONFIG_OFFSET_METACOUNT   2
 #define JUXTA_CONFIG_OFFSET_METAADDR    3
 #define JUXTA_CONFIG_SIZE               4 // number of all JUXTA_CONFIG_X
@@ -773,7 +773,8 @@ static void juxta1HzTask(void)
     GPIO_toggle(LED1);
     localTime++;
     // if currently dumping data
-    if (dumpResetFlag == 0) {
+    if (dumpResetFlag == 0)
+    {
         return;
     }
 
@@ -834,8 +835,7 @@ static void juxta1HzTask(void)
         memcpy(metaEntry + iEntry, data_raw_magnetic,
                sizeof(data_raw_magnetic));
         iEntry += sizeof(data_raw_magnetic);
-        memcpy(metaEntry + iEntry, &localTime,
-                       sizeof(localTime));
+        memcpy(metaEntry + iEntry, &localTime, sizeof(localTime));
         NAND_Write(&metaAddr, metaBuffer, metaEntry, JUXTA_META_ENTRY_SIZE);
         metaCount++;
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2,
@@ -1085,6 +1085,7 @@ static void multi_role_init(void)
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR7,
         SIMPLEPROFILE_CHAR7_LEN,
                                    dataBuffer);
+        // no need to set CHAR8 (COMMAND), write-only
     }
 
 // Register callback with SimpleGATTprofile
@@ -1107,12 +1108,12 @@ static void multi_role_init(void)
     Util_constructClock(&clkJuxta1Hz, multi_role_clockHandler,
     JUXTA_1HZ_PERIOD,
                         JUXTA_1HZ_PERIOD,
-                        false,
+                        true,
                         (UArg) &argJuxta1Hz);
     Util_constructClock(&clkJuxtaSubHz, multi_role_clockHandler,
     JUXTA_SUBHZ_PERIOD,
                         JUXTA_SUBHZ_PERIOD,
-                        false,
+                        true,
                         (UArg) &argJuxtaSubHz);
 
     Util_constructClock(&clkJuxtaLEDTimeout, multi_role_clockHandler,
@@ -2055,8 +2056,9 @@ static status_t multi_role_enqueueMsg(uint8_t event, void *pData)
 
 static void multi_role_processCharValueChangeEvt(uint8_t paramId)
 {
-    uint8_t len;
-    bStatus_t retProfile;
+    // some chars do not call simpleProfile_GetParameter, so set retProfile invalid here
+    uint8_t len = 0;
+    bStatus_t retProfile = INVALIDPARAMETER;
 
     switch (paramId)
     {
@@ -2072,11 +2074,12 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
     case SIMPLEPROFILE_CHAR6:
         len = SIMPLEPROFILE_CHAR7_LEN;
         break;
-    case SIMPLEPROFILE_CHAR7:
-        len = SIMPLEPROFILE_CHAR7_LEN;
+    case SIMPLEPROFILE_CHAR8:
+        len = SIMPLEPROFILE_CHAR8_LEN;
         break;
     case SIMPLEPROFILE_CHAR4: // no writes
     case SIMPLEPROFILE_CHAR5: // no writes
+    case SIMPLEPROFILE_CHAR7: // no writes
     default:
         break;
     }
@@ -2104,12 +2107,12 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR3, pValue);
         memcpy(&localTime, pValue, sizeof(uint32_t));
         break;
-    case SIMPLEPROFILE_CHAR6:
+    case SIMPLEPROFILE_CHAR6: // ADVERTISE MODE
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR6, pValue);
         modeCallback(pValue[0]);
         break;
-    case SIMPLEPROFILE_CHAR7:
-        retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR7, pValue);
+    case SIMPLEPROFILE_CHAR8:
+        retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR8, pValue);
         if (pValue[0] == LOGS_DUMP_KEY)
         {
             if (dumpResetFlag)
@@ -2139,11 +2142,11 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         break;
     case SIMPLEPROFILE_CHAR4: // no writes
     case SIMPLEPROFILE_CHAR5: // no writes
+    case SIMPLEPROFILE_CHAR7: // no writes
     default:
-// should not reach here!
         break;
     }
-    if (retProfile)
+    if (pValue) // len=0 should make pValue null; was: retProfile
     {
         ICall_free(pValue);
     }
