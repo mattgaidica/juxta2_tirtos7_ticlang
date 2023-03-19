@@ -1,22 +1,23 @@
 multi_role_init:
 - multi_role_processGapMsg
 -- GAP_DEVICE_INIT_DONE_EVENT
---- multi_role_advertInit
----- GapAdv_enable
---- multi_role_scanInit
----- GapScan_enable
+--- multi_role_advertInit()
+--- multi_role_scanInit()
 
 GAP_LINK_ESTABLISHED_EVENT:
 - turn off adv (max 1 conn)
 - turn off scanning (GapScan_disable)
 - sets numConn == 1
 
+
 MR_EVT_SCAN_DISABLED:
 - occurs after scan and saves scans
 - re-enables scan (GapScan_enable) unless numConn > 0
 
-to keep scannning:
-GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
+To duty cycle scanning, see event: MR_EVT_SCAN_DISABLED
+Can duty cycle adv using: GapAdv_enable > GAP_ADV_ENABLE_OPTIONS_USE_DURATION
+- But where does it signal that it turned off?
+-- see: multi_role_processAdvEvent
 
 [ ] logScan could go into multi_role_addScanInfo
 

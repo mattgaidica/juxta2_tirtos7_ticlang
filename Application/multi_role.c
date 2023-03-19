@@ -54,13 +54,16 @@
  * CONSTANTS
  */
 
-#define MAG_THRESHOLD_MG    30000
+#define MAG_THRESHOLD_MG    20000
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
 #define META_DUMP_KEY       0x22
 #define NEW_DEVICE_ADDR_LEN advData1[0] - 1
 #define JUXTA_BASE_LOGS     0 // put logs here in NAND
-#define JUXTA_BASE_META     0x40000 // put meta here in NAND
+#define JUXTA_BASE_META     0x200000 // put meta here in NAND
+
+#define JUXTA_SCAN_ADV_DURATION 10 // seconds, interval mode
+#define JUXTA_SCAN_ADV_PERIOD   30 // seconds, interval mode
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -83,11 +86,15 @@
 #define JUXTA_LOG_ENTRY_SIZE            13
 #define JUXTA_META_ENTRY_SIZE           22
 
-#define JUXTA_CONFIG_OFFSET_LOGCOUNT    0 // all uint32_t
-#define JUXTA_CONFIG_OFFSET_LOGADDR     1
-#define JUXTA_CONFIG_OFFSET_METACOUNT   2
-#define JUXTA_CONFIG_OFFSET_METAADDR    3
-#define JUXTA_CONFIG_SIZE               4 // number of all JUXTA_CONFIG_X
+typedef enum
+{
+    JUXTA_CONFIG_OFFSET_LOGCOUNT,
+    JUXTA_CONFIG_OFFSET_LOGADDR,
+    JUXTA_CONFIG_OFFSET_METACOUNT,
+    JUXTA_CONFIG_OFFSET_METAADDR,
+    JUXTA_CONFIG_OFFSET_MODE,
+    JUXTA_CONFIG_OFFSET_NUMEL // leave at end
+} juxtaConfigOffsets_t;
 
 #define JUXTA_LED_TIMEOUT_PERIOD        1 // ms
 #define TIME_SERVICE_UUID               0xEFFE // see iOS > BLEPeripheralApp
@@ -285,7 +292,9 @@ static mrConnRec_t connList[MAX_NUM_BLE_CONNS];
 static uint8 advHandle;
 static uint8 advHandleExtended;
 
-static bool mrIsAdvertising = false;
+static bool isAdvertising = false;
+static bool isScanning = false;
+static bool isConnected = false;
 // Address mode
 static GAP_Addr_Modes_t addrMode = DEFAULT_ADDRESS_MODE;
 
@@ -305,15 +314,20 @@ mrClockEventData_t argJuxtaSubHz = { .event = JUXTA_EVT_SUBHZ };
 
 typedef enum
 {
-    JUXTA_MODE_AXY_LOGGER, JUXTA_MODE_SHELF, JUXTA_MODE_ADVERTISE_NOSCAN
+    JUXTA_MODE_SHELF,
+    JUXTA_MODE_INTERVAL,
+    JUXTA_MODE_MOTION,
+    JUXTA_MODE_BASE,
+    JUXTA_MODE_NUMEL // leave at end
 } juxtaMode_t;
 
-static uint8_t juxtaMode = JUXTA_MODE_AXY_LOGGER; //JUXTA_MODE_SHELF; // init mode
+static uint8_t juxtaMode = JUXTA_MODE_NUMEL; // init mode, will not match new mode
+static uint8_t nvs_juxtaMode; // set by loadConfigs(), default: JUXTA_MODE_SHELF
 
 NVS_Handle nvsConfigHandle;
 NVS_Handle nvsDataHandle;
 NVS_Attrs regionAttrs;
-static uint32_t nvsConfigBuffer[JUXTA_CONFIG_SIZE];
+static uint32_t nvsConfigBuffer[JUXTA_CONFIG_OFFSET_NUMEL];
 static uint32_t localTime = 0;
 
 static int16_t data_raw_acceleration[3];
@@ -367,13 +381,10 @@ static uint8_t metaEntry[JUXTA_META_ENTRY_SIZE];
 static uint32_t dumpCount, dumpAddr = 0;
 static uint8_t dumpResetFlag = 1;
 
-typedef enum
-{
-    JUXTA_LOG, JUXTA_AXY
-} juxtaDataType;
-
-//bool juxtaRadio = false;
-//uint8_t juxtaRadioCount = 0;
+// juxta mode
+static bool scanInitDone = false;
+static bool advertInitDone = false;
+uint32_t juxtaDurationCount = 0;
 
 //UART_Handle uart = NULL;
 
@@ -437,7 +448,7 @@ static void saveConfigs(void);
 static void setXL(void);
 static void setMag(void);
 static void setTemp(void);
-static void modeCallback(uint8_t newMode);
+static void juxtaModeCallback(uint8_t newMode);
 
 /*********************************************************************
  * EXTERN FUNCTIONS
@@ -461,13 +472,74 @@ static gapBondCBs_t multi_role_BondMgrCBs = { multi_role_passcodeCB, // Passcode
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
+bool isMagnetPresent(void)
+{
+    if (fabs(magnetic_mG[0]) + fabs(magnetic_mG[1])
+            + fabs(magnetic_mG[2]) > MAG_THRESHOLD_MG)
+    {
+        return true;
+    }
+    return false;
+}
+
+// could test status, but not sure what to do with it
+bool doScan(bool enable)
+{
+    uint8_t status = FAILURE;
+    if (numConn == 0) // only allow if not connected
+    {
+        if (enable)
+        {
+            GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
+        }
+        else
+        {
+            GapScan_disable();
+        }
+        // set isScanning via multi_role_processAdvEvent
+        status = SUCCESS;
+    }
+    return status;
+}
+
+bool doAdvertise(bool enable)
+{
+    uint8_t status = FAILURE;
+    if (numConn == 0) // only allow if not connected
+    {
+        if (enable)
+        {
+            // was: GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
+            // setup same as scan, duration in 10ms ticks
+            GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
+                          DEFAULT_SCAN_DURATION);
+            GapAdv_enable(advHandleExtended,
+                          GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
+                          DEFAULT_SCAN_DURATION);
+        }
+        else
+        {
+            GapAdv_disable(advHandle);
+            GapAdv_disable(advHandleExtended);
+        }
+        // set isAdvertising via multi_role_processAdvEvent
+        status = SUCCESS;
+    }
+    return status;
+}
+
 ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
                       uint16_t len)
 {
     ReturnType ret = Flash_ProgramFailed;
+    uint32_t MAX_MEM_LOC = FLASH_SIZE; // meta memory goes to end
     uint16_t i;
 
-    if (*addr + len >= FLASH_SIZE)
+    if (*addr < JUXTA_BASE_META) // it must be logs
+    {
+        MAX_MEM_LOC = JUXTA_BASE_META;
+    }
+    if (*addr + len >= MAX_MEM_LOC)
     {
         ret = Flash_MemoryOverflow;
         return ret;
@@ -476,7 +548,7 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
     for (i = 0; i < len; i++)
     {
         memcpy(buffer + ADDRESS_2_COL(*addr), data + i, sizeof(uint8_t)); // add byte to buffer
-        // check if area needs to be erased
+// check if area needs to be erased
         if (ADDRESS_2_PAGE(*addr) == 0 && ADDRESS_2_COL(*addr) == 0) // 0th page in block, 0th col
         {
             ret = FlashBlockErase(*addr); // wipe 64 pages
@@ -552,7 +624,7 @@ uint8_t get_bit_value(const uint8_t *data, uint16_t n)
     uint8_t bit_index = n % 8; // calculate the bit index
     uint8_t byte = *(data + byte_index); // get the byte at the byte index
 
-    // use bitwise operators to get the bit value
+// use bitwise operators to get the bit value
     uint8_t mask = 1 << bit_index;
     uint8_t bit_value = (byte & mask) >> bit_index;
 
@@ -566,7 +638,7 @@ void set_bit_value(uint8_t *data, uint16_t n, uint8_t bit_value, uint16_t len)
     uint8_t bit_index = n % 8; // calculate the bit index
     uint8_t byte = *(data + byte_index); // get the byte at the byte index
 
-    // use bitwise operators to set the bit value
+// use bitwise operators to set the bit value
     uint8_t mask = 1 << bit_index;
     byte &= ~mask; // clear the bit at the bit index
     byte |= (bit_value << bit_index); // set the bit to the specified value
@@ -589,7 +661,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
     GPIO_write(sensbus->CLK_PIN, 1); // start high
     GPIO_write(sensbus->CS_PIN, 0); // active low
     usleep(1); // CS pin
-    // write addr
+// write addr
     for (i = 0; i < 8; i++)
     {
         GPIO_write(sensbus->CLK_PIN, 0); // clock down
@@ -600,7 +672,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         GPIO_write(sensbus->CLK_PIN, 1); // clock up
         usleep(SPI_HALF_PERIOD); // delay again
     }
-    // read data len
+// read data len
     GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[1]); // set as input
     for (i = 0; i < (8 * len); i++)
     {
@@ -630,7 +702,7 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
     GPIO_write(sensbus->CLK_PIN, 1); // start high
     GPIO_write(sensbus->CS_PIN, 0); // active low
     usleep(1); // CS pin
-    // write addr
+// write addr
     for (i = 0; i < 8; i++)
     {
         GPIO_write(sensbus->CLK_PIN, 0); // clock down
@@ -639,7 +711,7 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
         GPIO_write(sensbus->CLK_PIN, 1); // clock up
         usleep(SPI_HALF_PERIOD); // delay again
     }
-    // write data len
+// write data len
     for (i = 0; i < (8 * len); i++)
     {
         GPIO_write(sensbus->CLK_PIN, 0); // clock down
@@ -689,7 +761,7 @@ static void blinkLED(uint8_t runOnce)
 
 static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addScanInfo()
 {
-    // see: scanList, numScanRes
+// see: scanList, numScanRes
     uint32_t offset, i;
     uint8_t iEntry = 0;
     if (numScanRes > 0)
@@ -715,7 +787,8 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
                                    &logCount);
         timeoutLED(LED2);
-        // saveConfigs()???
+        numScanRes = 0;
+// saveConfigs()???
     }
 }
 
@@ -728,11 +801,11 @@ static void loadConfigs(void)
     logAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR];
     metaCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT];
     metaAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR];
-
-    // check for first flash/new NVS space
-//    if (logCount | logAddr | metaCount | metaAddr == 0xFFFFFFFF)
-//    {
-//    }
+    nvs_juxtaMode = (uint8_t) nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE];
+    if (nvs_juxtaMode >= JUXTA_MODE_NUMEL)
+    {
+        nvs_juxtaMode = JUXTA_MODE_SHELF; // default
+    }
 
     NVS_read(nvsDataHandle, 0, (void*) logBuffer,
     PAGE_DATA_SIZE);
@@ -744,11 +817,12 @@ static void saveConfigs(void)
 {
     NVS_getAttrs(nvsConfigHandle, &regionAttrs);
     NVS_erase(nvsConfigHandle, 0, regionAttrs.sectorSize); // erase all each time
-    // nvsConfigBuffer is uint32 (so is pointer that increments)
+// nvsConfigBuffer is uint32 (so is pointer that increments)
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT] = logCount;
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR] = logAddr;
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT] = metaCount;
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR] = metaAddr;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE] = (uint32_t) juxtaMode;
     NVS_write(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
               sizeof(nvsConfigBuffer),
               NVS_WRITE_POST_VERIFY);
@@ -763,6 +837,11 @@ static void saveConfigs(void)
 
 static void juxtaSubHzTask(void)
 {
+    // exit if dumping data or connected
+    if (dumpResetFlag == 0 || isConnected)
+    {
+        return;
+    }
     saveConfigs();
 }
 
@@ -770,12 +849,12 @@ static void juxta1HzTask(void)
 {
     GPIO_toggle(LED1);
     localTime++;
+
     // if currently dumping data
     if (dumpResetFlag == 0)
-    {
         return;
-    }
 
+    // *** NOT DUMPING BELOW DATA ***
     simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
                                &localTime);
     ADC_convert(adc_vBatt, &data_raw_voltage);
@@ -789,51 +868,49 @@ static void juxta1HzTask(void)
     SIMPLEPROFILE_CHAR5_LEN,
                                &temperature_degC);
 
-    // ie, skip when connected
-    if (numConn == 0)
+    // convert to interrupt?
+    if (GPIO_read(DRDY) == 1)
     {
-        setXL();
-        // convert to interrupt?
-        if (GPIO_read(DRDY) == 1)
+        setMag();
+        lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
+    }
+    setXL();
+
+    if (scanInitDone && advertInitDone)
+    {
+        if (juxtaMode == JUXTA_MODE_NUMEL) // init
         {
-            setMag();
-            lsm303agr_mag_operating_mode_set(&dev_ctx_mg,
-                                             LSM303AGR_SINGLE_TRIGGER);
-        }
-        if (fabs(magnetic_mG[0]) + fabs(magnetic_mG[1])
-                + fabs(magnetic_mG[2]) > MAG_THRESHOLD_MG)
-        {
-            GPIO_write(LED2, 1);
+            juxtaModeCallback(nvs_juxtaMode);
         }
         else
         {
-            GPIO_write(LED2, 0);
+            juxtaModeCallback(juxtaMode); // call with current mode to do periodic stuff
         }
+    }
+    juxtaDurationCount++;
 
-        // !! add localTime
-        // write sequence
+    // *** NOT CONNECTED BELOW ***
+    if (!isConnected) // ie, skip when connected
+    {
+
         uint8_t iEntry = 0;
         uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(SIMPLEPROFILE_SERV_UUID),
                                            HI_UINT16(SIMPLEPROFILE_SERV_UUID) };
 
         memcpy(metaEntry, uuid, sizeof(uuid));
-        iEntry += sizeof(uuid);
-        // int16
+        iEntry += sizeof(uuid); // int16
         memcpy(metaEntry + iEntry, &data_raw_temperature,
                sizeof(data_raw_temperature));
-        iEntry += sizeof(data_raw_temperature);
-        // int16
+        iEntry += sizeof(data_raw_temperature); // int16
         memcpy(metaEntry + iEntry, &data_raw_voltage, sizeof(data_raw_voltage));
-        iEntry += sizeof(data_raw_voltage);
-        // int16[3]
+        iEntry += sizeof(data_raw_voltage); // int16[3]
         memcpy(metaEntry + iEntry, data_raw_acceleration,
                sizeof(data_raw_acceleration));
         iEntry += sizeof(data_raw_acceleration);
-        // int16[3]
         memcpy(metaEntry + iEntry, data_raw_magnetic,
                sizeof(data_raw_magnetic));
-        iEntry += sizeof(data_raw_magnetic);
-        memcpy(metaEntry + iEntry, &localTime, sizeof(localTime));
+        iEntry += sizeof(data_raw_magnetic); // int16[3]
+        memcpy(metaEntry + iEntry, &localTime, sizeof(localTime)); // uint32
         NAND_Write(&metaAddr, metaBuffer, metaEntry, JUXTA_META_ENTRY_SIZE);
         metaCount++;
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2,
@@ -846,7 +923,7 @@ static void dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
 {
     if (dumpAddr < *addr)
     {
-        // at start: write the existing buffer to NAND, fill remaining page with 0xFF
+// at start: write the existing buffer to NAND, fill remaining page with 0xFF
         if (dumpAddr == BASE && dumpCount == 0)
         {
             uint32_t restoreAddr = *addr;
@@ -859,7 +936,7 @@ static void dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
             }
             *addr = restoreAddr; // put logAddr back to where it was
         }
-        // logDumpCount increments by 128 (SIMPLEPROFILE_CHAR7_LEN): goes to zero every page
+// logDumpCount increments by 128 (SIMPLEPROFILE_CHAR7_LEN): goes to zero every page
         if (dumpCount == 0)
         {
             FlashPageRead(dumpAddr, buffer);
@@ -878,9 +955,64 @@ static void dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
     }
 }
 
-static void modeCallback(uint8_t newMode)
+static void juxtaModeCallback(uint8_t newMode)
 {
-// change axy mode
+    if (juxtaMode != newMode && newMode <= JUXTA_MODE_NUMEL)
+    {
+        juxtaMode = newMode;
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, SIMPLEPROFILE_CHAR6_LEN,
+                                   &juxtaMode);
+        saveConfigs();
+    }
+
+    // periodic
+    bool wantsToAdvertise = false;
+    bool wantsToScan = false;
+    switch (juxtaMode)
+    {
+    case JUXTA_MODE_SHELF:
+        wantsToAdvertise = false;
+        wantsToScan = false;
+        break;
+    case JUXTA_MODE_INTERVAL:
+        if (localTime % JUXTA_SCAN_ADV_PERIOD == 0)
+            juxtaDurationCount = 0;
+        if (juxtaDurationCount < JUXTA_SCAN_ADV_DURATION)
+        {
+            wantsToAdvertise = true;
+            wantsToScan = true;
+        }
+        break;
+    case JUXTA_MODE_MOTION:
+        // use motion interrupt? Threshold?
+        if (localTime % 3600 == 0) // wakeup every hour? analysis would need to interpret this
+            juxtaDurationCount = 0;
+        if (juxtaDurationCount < JUXTA_SCAN_ADV_DURATION)
+        {
+            wantsToAdvertise = true;
+            wantsToScan = true;
+        }
+        break;
+    case JUXTA_MODE_BASE:
+        wantsToAdvertise = true;
+        break;
+    default:
+        break;
+    }
+
+    if (isMagnetPresent())
+    {
+        // !! implement "scan with magnet present" here
+        wantsToAdvertise = true; // force
+    }
+
+    if (isConnected) // override
+    {
+        wantsToAdvertise = false;
+        wantsToScan = false;
+    }
+    doAdvertise(wantsToAdvertise);
+    doScan(wantsToScan);
 }
 
 static void multi_role_spin(void)
@@ -928,7 +1060,7 @@ static void multi_role_init(void)
 
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
     nvsDataHandle = NVS_open(NVS_JUXTA_DATA, NULL);
-    // !! check for null handles?
+// !! check for null handles?
     loadConfigs();
 
     dev_ctx_xl.write_reg = platform_write;
@@ -991,15 +1123,13 @@ static void multi_role_init(void)
 //    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
 
-    // note: this has to be in 3-wire so CS is manually controlled
+// note: this has to be in 3-wire so CS is manually controlled
     SPI_Params_init(&spiParams);
     SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
     has_NAND = NAND_Init();
 
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
-
-//    modeCallback(juxtaMode); // resets sniff for JUXTA_MODE_AXY_LOGGER, stops sniff for others
 
     BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- init ", MR_TASK_PRIORITY);
 // ******************************************************************
@@ -1018,8 +1148,6 @@ static void multi_role_init(void)
     multi_role_clearConnListEntry(LINKDB_CONNHANDLE_ALL);
 
 // Set the Device Name characteristic in the GAP GATT Service
-// For more information, see the section in the User's Guide:
-// http://software-dl.ti.com/lprf/ble5stack-latest/
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_LEN,
                      (void* )attDeviceName);
 
@@ -1083,7 +1211,7 @@ static void multi_role_init(void)
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR7,
         SIMPLEPROFILE_CHAR7_LEN,
                                    dataBuffer);
-        // no need to set CHAR8 (COMMAND), write-only
+// no need to set CHAR8 (COMMAND), write-only
     }
 
 // Register callback with SimpleGATTprofile
@@ -1291,8 +1419,6 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 
     case GAP_CONNECTING_CANCELLED_EVENT:
     {
-//      Display_printf(dispHandle, MR_ROW_NON_CONN, 0,
-//                     "Connecting attempt cancelled");
         break;
     }
 
@@ -1307,33 +1433,13 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- got GAP_LINK_ESTABLISHED_EVENT", 0);
 // Add this connection info to the list
         connIndex = multi_role_addConnInfo(connHandle, pAddr, role);
-        GapScan_disable();
-
 // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
         MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
-
         connList[connIndex].charHandle = 0;
 
-//        pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
-
-//      Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "Connected to %s", pStrAddr);
-//      Display_printf(dispHandle, MR_ROW_NUM_CONN, 0, "Num Conns: %d", numConn);
-
-        if (numConn < MAX_NUM_BLE_CONNS)
-        {
-// Start advertising since there is room for more connections
-            GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
-            GapAdv_enable(advHandleExtended, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
-        }
-        else
-        {
-// Stop advertising since there is no room for more connections
-            GapAdv_disable(advHandle);
-            GapAdv_disable(advHandleExtended);
-        }
+        isConnected = true;
         dumpCount = 0; // should be reset, but make sure
         dumpResetFlag = 1;
-
         break;
     }
 
@@ -1342,7 +1448,7 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         uint16_t connHandle =
                 ((gapTerminateLinkEvent_t*) pMsg)->connectionHandle;
         uint8_t connIndex;
-        uint8_t *pStrAddr;
+//        uint8_t *pStrAddr;
 
         BLE_LOG_INT_STR(0, BLE_LOG_MODULE_APP, "APP : GAP msg: status=%d, opcode=%s\n", 0, "GAP_LINK_TERMINATED_EVENT");
 // Mark this connection deleted in the connected device list.
@@ -1350,19 +1456,12 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 
 // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
         MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
-
-        pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
-
-// Start advertising since there is room for more connections
-        GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
-        GapAdv_enable(advHandleExtended, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
-        GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
-
+//        pStrAddr = (uint8_t*) Util_convertBdAddr2Str(connList[connIndex].addr);
 // If no active connections
         if (numConn == 0)
         {
+            isConnected = false;
         }
-
         break;
     }
 
@@ -1496,19 +1595,17 @@ static void multi_role_scanInit(void)
                         INIT_PHYPARAM_MIN_CONN_INT);
     GapInit_setPhyParam(DEFAULT_INIT_PHY, INIT_PHYPARAM_CONN_INT_MAX,
                         INIT_PHYPARAM_MAX_CONN_INT);
-    GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
+    scanInitDone = true;
 }
 
 static void multi_role_advertInit(void)
 {
-    uint8_t status = FAILURE;
-
     BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- call GapAdv_create set=%d,%d\n", 1, 0);
 // Create Advertisement sets and assign handle
     GapAdv_create(&multi_role_advCB, &advParams1, &advHandle);
     GapAdv_create(&multi_role_advCB, &advParams2, &advHandleExtended);
 
-    // replace the address in advData (created by SysConfig)
+// replace the address in advData (created by SysConfig)
     memcpy(advData1 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
     memcpy(advData2 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_ADV, sizeof(advData1),
@@ -1532,18 +1629,6 @@ static void multi_role_advertInit(void)
                     | GAP_ADV_EVT_MASK_END_AFTER_DISABLE
                     | GAP_ADV_EVT_MASK_SET_TERMINATED);
 
-    BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- GapAdv_enable", 0);
-// Enable legacy advertising for set #1
-    status = GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_MAX, 0);
-    status = GapAdv_enable(advHandleExtended, GAP_ADV_ENABLE_OPTIONS_USE_MAX,
-                           0);
-
-    if (status != SUCCESS)
-    {
-        mrIsAdvertising = false;
-//    Display_printf(dispHandle, MR_ROW_ADVERTIS, 0, "Error: Failed to Start Advertising!");
-    }
-
     if (addrMode > ADDRMODE_RANDOM)
     {
         multi_role_updateRPA();
@@ -1552,6 +1637,7 @@ static void multi_role_advertInit(void)
         READ_RPA_PERIOD,
                             0, true, (UArg) &argRpaRead);
     }
+    advertInitDone = true;
 }
 
 static void multi_role_advCB(uint32_t event, void *pBuf, uintptr_t arg)
@@ -1755,11 +1841,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     case MR_EVT_SCAN_DISABLED:
     {
         logScan();
-        if (numConn == 0)
-        {
-            numScanRes = 0;
-            GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
-        }
         break;
     }
 
@@ -1824,11 +1905,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     case MR_EVT_INSUFFICIENT_MEM:
     {
 // We might be in the middle of scanning, try stopping it.
-#ifdef __GNUC__
-        GapScan_disable("");
-#else
-      GapScan_disable();
-#endif //__GNUC__
+
+        doScan(false);
         break;
     }
 
@@ -1846,33 +1924,43 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 {
     switch (pEventData->event)
-// see: *(uint8_t *)(pEventData->pBuf
     {
+    // *** ADVERTISE EVENTS ***
+    // Sent on the first advertisement after a @ref GapAdv_enable
     case GAP_EVT_ADV_START_AFTER_ENABLE:
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- GAP_EVT_ADV_START_AFTER_ENABLE", 0);
-        mrIsAdvertising = true;
+        isAdvertising = true;
         break;
 
+        // Sent after advertising stops due to a @ref GapAdv_disable
     case GAP_EVT_ADV_END_AFTER_DISABLE:
-        mrIsAdvertising = false;
+        isAdvertising = false;
         break;
 
+        // Sent at the beginning of each advertisement (for legacy advertising) or at
+        // the beginning of each each advertisement set (for extended advertising)
     case GAP_EVT_ADV_START:
         break;
 
+        // Sent after each advertisement (for legacy advertising) or at the end of
+        // each each advertisement set (for extended advertising)
     case GAP_EVT_ADV_END:
         break;
 
+        // Sent when an advertisement set is terminated due to a connection
     case GAP_EVT_ADV_SET_TERMINATED:
-    {
-        mrIsAdvertising = false;
-#ifndef Display_DISABLE_ALL
-      GapAdv_setTerm_t *advSetTerm = (GapAdv_setTerm_t *)(pEventData->pBuf);
-#endif
-//      Display_printf(dispHandle, MR_ROW_ADVERTIS, 0, "Adv Set %d disabled after conn %d",
-//                     advSetTerm->handle, advSetTerm->connHandle );
-    }
+        isAdvertising = false;
         break;
+
+        // *** SCAN EVENTS ***
+    case GAP_EVT_SCAN_ENABLED:
+        isScanning = true;
+
+    case GAP_EVT_SCAN_DISABLED:
+        isScanning = false;
+
+    case GAP_EVT_SCAN_DUR_ENDED:
+        isScanning = false;
 
     case GAP_EVT_SCAN_REQ_RECEIVED:
         break;
@@ -2054,7 +2142,7 @@ static status_t multi_role_enqueueMsg(uint8_t event, void *pData)
 
 static void multi_role_processCharValueChangeEvt(uint8_t paramId)
 {
-    // some chars do not call simpleProfile_GetParameter, so set retProfile invalid here
+// some chars do not call simpleProfile_GetParameter, so set retProfile invalid here
     uint8_t len = 0;
     bStatus_t retProfile = INVALIDPARAMETER;
 
@@ -2089,14 +2177,14 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
 // only characteristics with GATT_PROP_WRITE, all others are written elsewhere
     case SIMPLEPROFILE_CHAR1: // LOG COUNT
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR1, pValue);
-        // treat any write as erasing memory
+// treat any write as erasing memory
         logCount = 0;
         logAddr = JUXTA_BASE_LOGS;
         saveConfigs();
         break;
     case SIMPLEPROFILE_CHAR2: // META COUNT
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR2, pValue);
-        // treat any write as erasing memory
+// treat any write as erasing memory
         metaCount = 0;
         metaAddr = JUXTA_BASE_META;
         saveConfigs();
@@ -2107,7 +2195,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         break;
     case SIMPLEPROFILE_CHAR6: // ADVERTISE MODE
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR6, pValue);
-        modeCallback(pValue[0]);
+        juxtaModeCallback(pValue[0]);
         break;
     case SIMPLEPROFILE_CHAR8:
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR8, pValue);
