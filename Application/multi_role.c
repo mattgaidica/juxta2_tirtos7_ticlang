@@ -54,7 +54,7 @@
  * CONSTANTS
  */
 
-#define MAG_THRESHOLD_MG    20000
+#define MAG_THRESHOLD_MG    5000
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
 #define META_DUMP_KEY       0x22
@@ -290,7 +290,7 @@ static mrConnRec_t connList[MAX_NUM_BLE_CONNS];
 
 // Advertising handles
 static uint8 advHandle;
-static uint8 advHandleExtended;
+//static uint8 advHandleExtended;
 
 static bool isAdvertising = false;
 static bool isScanning = false;
@@ -472,16 +472,6 @@ static gapBondCBs_t multi_role_BondMgrCBs = { multi_role_passcodeCB, // Passcode
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
-bool isMagnetPresent(void)
-{
-    if (fabs(magnetic_mG[0]) + fabs(magnetic_mG[1])
-            + fabs(magnetic_mG[2]) > MAG_THRESHOLD_MG)
-    {
-        return true;
-    }
-    return false;
-}
-
 // could test status, but not sure what to do with it
 bool doScan(bool enable)
 {
@@ -513,14 +503,14 @@ bool doAdvertise(bool enable)
             // setup same as scan, duration in 10ms ticks
             GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
                           DEFAULT_SCAN_DURATION);
-            GapAdv_enable(advHandleExtended,
-                          GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
-                          DEFAULT_SCAN_DURATION);
+//            GapAdv_enable(advHandleExtended,
+//                          GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
+//                          DEFAULT_SCAN_DURATION);
         }
         else
         {
             GapAdv_disable(advHandle);
-            GapAdv_disable(advHandleExtended);
+//            GapAdv_disable(advHandleExtended);
         }
         // set isAdvertising via multi_role_processAdvEvent
         status = SUCCESS;
@@ -603,6 +593,16 @@ static void setMag(void)
     }
 }
 
+bool isMagnetPresent(void)
+{
+    if (fabs(magnetic_mG[0]) + fabs(magnetic_mG[1])
+            + fabs(magnetic_mG[2]) > MAG_THRESHOLD_MG)
+    {
+        return true;
+    }
+    return false;
+}
+
 static void setTemp(void)
 {
     /* Read output only if new value is available */
@@ -616,6 +616,13 @@ static void setTemp(void)
         temperature_degC = lsm303agr_from_lsb_hr_to_celsius(
                 data_raw_temperature);
     }
+}
+
+static void setVoltage(void)
+{
+    ADC_convert(adc_vBatt, &data_raw_voltage);
+    voltage_uv = (ADC_convertToMicroVolts(adc_vBatt, data_raw_voltage) * 250)
+            / 100;
 }
 
 uint8_t get_bit_value(const uint8_t *data, uint16_t n)
@@ -784,11 +791,8 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
             NAND_Write(&logAddr, logBuffer, logEntry, JUXTA_LOG_ENTRY_SIZE);
             logCount++;
         }
-        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
-                                   &logCount);
         timeoutLED(LED2);
         numScanRes = 0;
-// saveConfigs()???
     }
 }
 
@@ -845,9 +849,28 @@ static void juxtaSubHzTask(void)
     saveConfigs();
 }
 
+static void juxtaUpdateBLEParameters(void)
+{
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
+                               &logCount);
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2,
+    SIMPLEPROFILE_CHAR2_LEN,
+                               &metaCount);
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
+                               &localTime);
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN,
+                               &voltage_uv);
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5,
+    SIMPLEPROFILE_CHAR5_LEN,
+                               &temperature_degC);
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, SIMPLEPROFILE_CHAR6_LEN,
+                               &juxtaMode);
+}
+
 static void juxta1HzTask(void)
 {
-    GPIO_toggle(LED1);
+//    timeoutLED(LED1);
+//    GPIO_toggle(LED1);
     localTime++;
 
     // if currently dumping data
@@ -855,26 +878,11 @@ static void juxta1HzTask(void)
         return;
 
     // *** NOT DUMPING BELOW DATA ***
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
-                               &localTime);
-    ADC_convert(adc_vBatt, &data_raw_voltage);
-    voltage_uv = (ADC_convertToMicroVolts(adc_vBatt, data_raw_voltage) * 250)
-            / 100;
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN,
-                               &voltage_uv);
-
-    setTemp();
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5,
-    SIMPLEPROFILE_CHAR5_LEN,
-                               &temperature_degC);
-
-    // convert to interrupt?
-    if (GPIO_read(DRDY) == 1)
+    if (GPIO_read(DRDY) == 1) // convert to interrupt?
     {
         setMag();
         lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
     }
-    setXL();
 
     if (scanInitDone && advertInitDone)
     {
@@ -889,33 +897,43 @@ static void juxta1HzTask(void)
     }
     juxtaDurationCount++;
 
-    // *** NOT CONNECTED BELOW ***
-    if (!isConnected) // ie, skip when connected
+    if (isConnected)
     {
+        setVoltage();
+        setTemp();
+        juxtaUpdateBLEParameters(); // refresh
+    }
+    else
+    { // ie, skip when connected
+        if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
+        {
+            setXL();
+            setVoltage();
+            setTemp();
+            uint8_t iEntry = 0;
+            uint8_t uuid[ATT_BT_UUID_SIZE] =
+                    { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
+                            SIMPLEPROFILE_SERV_UUID) };
 
-        uint8_t iEntry = 0;
-        uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(SIMPLEPROFILE_SERV_UUID),
-                                           HI_UINT16(SIMPLEPROFILE_SERV_UUID) };
-
-        memcpy(metaEntry, uuid, sizeof(uuid));
-        iEntry += sizeof(uuid); // int16
-        memcpy(metaEntry + iEntry, &data_raw_temperature,
-               sizeof(data_raw_temperature));
-        iEntry += sizeof(data_raw_temperature); // int16
-        memcpy(metaEntry + iEntry, &data_raw_voltage, sizeof(data_raw_voltage));
-        iEntry += sizeof(data_raw_voltage); // int16[3]
-        memcpy(metaEntry + iEntry, data_raw_acceleration,
-               sizeof(data_raw_acceleration));
-        iEntry += sizeof(data_raw_acceleration);
-        memcpy(metaEntry + iEntry, data_raw_magnetic,
-               sizeof(data_raw_magnetic));
-        iEntry += sizeof(data_raw_magnetic); // int16[3]
-        memcpy(metaEntry + iEntry, &localTime, sizeof(localTime)); // uint32
-        NAND_Write(&metaAddr, metaBuffer, metaEntry, JUXTA_META_ENTRY_SIZE);
-        metaCount++;
-        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2,
-        SIMPLEPROFILE_CHAR2_LEN,
-                                   &metaCount);
+            memcpy(metaEntry, uuid, sizeof(uuid));
+            iEntry += sizeof(uuid); // int16
+            memcpy(metaEntry + iEntry, &data_raw_temperature,
+                   sizeof(data_raw_temperature));
+            iEntry += sizeof(data_raw_temperature); // int16
+            memcpy(metaEntry + iEntry, &data_raw_voltage,
+                   sizeof(data_raw_voltage));
+            iEntry += sizeof(data_raw_voltage); // int16[3]
+            memcpy(metaEntry + iEntry, data_raw_acceleration,
+                   sizeof(data_raw_acceleration));
+            iEntry += sizeof(data_raw_acceleration);
+            memcpy(metaEntry + iEntry, data_raw_magnetic,
+                   sizeof(data_raw_magnetic));
+            iEntry += sizeof(data_raw_magnetic); // int16[3]
+            memcpy(metaEntry + iEntry, &localTime, sizeof(localTime)); // uint32
+            NAND_Write(&metaAddr, metaBuffer, metaEntry,
+            JUXTA_META_ENTRY_SIZE);
+            metaCount++;
+        }
     }
 }
 
@@ -960,12 +978,16 @@ static void juxtaModeCallback(uint8_t newMode)
     if (juxtaMode != newMode && newMode <= JUXTA_MODE_NUMEL)
     {
         juxtaMode = newMode;
-        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, SIMPLEPROFILE_CHAR6_LEN,
-                                   &juxtaMode);
+        juxtaUpdateBLEParameters(); // refresh
         saveConfigs();
+        if (juxtaMode == JUXTA_MODE_SHELF || juxtaMode == JUXTA_MODE_BASE) {
+            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_POWER_DOWN);
+        } else {
+            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_1Hz);
+        }
     }
 
-    // periodic
+// periodic
     bool wantsToAdvertise = false;
     bool wantsToScan = false;
     switch (juxtaMode)
@@ -1004,6 +1026,11 @@ static void juxtaModeCallback(uint8_t newMode)
     {
         // !! implement "scan with magnet present" here
         wantsToAdvertise = true; // force
+        GPIO_write(LED2, 1);
+    }
+    else
+    {
+        GPIO_write(LED2, 0);
     }
 
     if (isConnected) // override
@@ -1040,6 +1067,7 @@ static void multi_role_init(void)
 {
     GPIO_init();
     GPIO_write(LED1, 1);
+    GPIO_write(LED2, 1);
     SPI_init();
     NVS_init();
     ADC_init();
@@ -1055,8 +1083,6 @@ static void multi_role_init(void)
     char *pStrAddr = Util_convertBdAddr2Str(bleArr); // size 13, includes 1 end char
     memset(attDeviceName + 3, 0, sizeof(attDeviceName) - 3);
     memcpy(attDeviceName + 3, pStrAddr, 12); // include JX_
-
-    GPIO_write(LED2, 1);
 
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
     nvsDataHandle = NVS_open(NVS_JUXTA_DATA, NULL);
@@ -1075,23 +1101,23 @@ static void multi_role_init(void)
     lsm303agr_xl_spi_mode_set(&dev_ctx_xl, LSM303AGR_SPI_3_WIRE);
     whoamI = 0;
     lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
-    if (whoamI != LSM303AGR_ID_XL)
+    while (whoamI != LSM303AGR_ID_XL)
     {
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
         blinkLED(1); // not found, blink -> return
     }
-    has_XL = 1;
+    has_XL = 1; // !! needs integration
     lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
     whoamI = 0;
     lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
-    if (whoamI != LSM303AGR_ID_MG)
+    while (whoamI != LSM303AGR_ID_MG)
     {
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
         blinkLED(1);  // not found, blink -> return
     }
-    has_MG = 1;
+    has_MG = 1; // !! needs integration
     /* Restore default configuration for magnetometer */
     lsm303agr_mag_reset_set(&dev_ctx_mg, PROPERTY_ENABLE);
     do
@@ -1104,21 +1130,22 @@ static void multi_role_init(void)
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
     lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set Output Data Rate */
-    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // LSM303AGR_XL_ODR_1Hz
-    lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz);
-    lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
-    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_POWER_DOWN); // turn on with juxtaMode
     /* Set accelerometer full scale */
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
+    /* Enable temperature sensor */
+    lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE);
+    /* Set device in continuous mode */
+    lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
+
+    lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz); // but use single trigger below
+    lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
+    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set / Reset magnetic sensor mode */
     lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,
                                    LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
     /* Enable temperature compensation on mag sensor */
     lsm303agr_mag_offset_temp_comp_set(&dev_ctx_mg, PROPERTY_ENABLE);
-    /* Enable temperature sensor */
-    lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE);
-    /* Set device in continuous mode */
-    lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
     /* Set magnetometer in continuous mode */
 //    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
@@ -1462,6 +1489,8 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         {
             isConnected = false;
         }
+        dumpCount = 0; // should be reset, but make sure
+        dumpResetFlag = 1;
         break;
     }
 
@@ -1603,15 +1632,15 @@ static void multi_role_advertInit(void)
     BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- call GapAdv_create set=%d,%d\n", 1, 0);
 // Create Advertisement sets and assign handle
     GapAdv_create(&multi_role_advCB, &advParams1, &advHandle);
-    GapAdv_create(&multi_role_advCB, &advParams2, &advHandleExtended);
+//    GapAdv_create(&multi_role_advCB, &advParams2, &advHandleExtended);
 
 // replace the address in advData (created by SysConfig)
     memcpy(advData1 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
-    memcpy(advData2 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
+//    memcpy(advData2 + 2, newAddress, NEW_DEVICE_ADDR_LEN);
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_ADV, sizeof(advData1),
                         advData1);
-    GapAdv_loadByHandle(advHandleExtended, GAP_ADV_DATA_TYPE_ADV,
-                        sizeof(advData2), advData2);
+//    GapAdv_loadByHandle(advHandleExtended, GAP_ADV_DATA_TYPE_ADV,
+//                        sizeof(advData2), advData2);
 
 // Load scan response data for legacy, but not extended
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_SCAN_RSP,
@@ -1623,11 +1652,11 @@ static void multi_role_advertInit(void)
             GAP_ADV_EVT_MASK_START_AFTER_ENABLE
                     | GAP_ADV_EVT_MASK_END_AFTER_DISABLE
                     | GAP_ADV_EVT_MASK_SET_TERMINATED);
-    GapAdv_setEventMask(
-            advHandleExtended,
-            GAP_ADV_EVT_MASK_START_AFTER_ENABLE
-                    | GAP_ADV_EVT_MASK_END_AFTER_DISABLE
-                    | GAP_ADV_EVT_MASK_SET_TERMINATED);
+//    GapAdv_setEventMask(
+//            advHandleExtended,
+//            GAP_ADV_EVT_MASK_START_AFTER_ENABLE
+//                    | GAP_ADV_EVT_MASK_END_AFTER_DISABLE
+//                    | GAP_ADV_EVT_MASK_SET_TERMINATED);
 
     if (addrMode > ADDRMODE_RANDOM)
     {
@@ -1925,8 +1954,8 @@ static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 {
     switch (pEventData->event)
     {
-    // *** ADVERTISE EVENTS ***
-    // Sent on the first advertisement after a @ref GapAdv_enable
+// *** ADVERTISE EVENTS ***
+// Sent on the first advertisement after a @ref GapAdv_enable
     case GAP_EVT_ADV_START_AFTER_ENABLE:
         BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- GAP_EVT_ADV_START_AFTER_ENABLE", 0);
         isAdvertising = true;
