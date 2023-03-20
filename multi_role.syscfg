@@ -104,6 +104,7 @@ CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 
 rfdesign.fbSub1g = "none";
 rfdesign.pa20    = "none";
+rfdesign.fe24g   = "ID";
 
 ADC1.$name = "CONFIG_ADC_VBATT";
 

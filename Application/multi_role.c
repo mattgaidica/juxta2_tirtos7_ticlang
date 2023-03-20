@@ -62,8 +62,9 @@
 #define JUXTA_BASE_LOGS     0 // put logs here in NAND
 #define JUXTA_BASE_META     0x200000 // put meta here in NAND
 
+// Duty Cycle = JUXTA_SCAN_ADV_PERIOD / JUXTA_SCAN_ADV_DURATION
 #define JUXTA_SCAN_ADV_DURATION 10 // seconds, interval mode
-#define JUXTA_SCAN_ADV_PERIOD   30 // seconds, interval mode
+#define JUXTA_SCAN_ADV_PERIOD   20 // seconds, interval mode
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -869,8 +870,7 @@ static void juxtaUpdateBLEParameters(void)
 
 static void juxta1HzTask(void)
 {
-//    timeoutLED(LED1);
-//    GPIO_toggle(LED1);
+    timeoutLED(LED1);
     localTime++;
 
     // if currently dumping data
