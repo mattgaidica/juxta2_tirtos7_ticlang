@@ -43,8 +43,6 @@ const SPI          = scripting.addModule("/ti/drivers/SPI", {}, false);
 const SPI1         = SPI.addInstance();
 const TRNG         = scripting.addModule("/ti/drivers/TRNG");
 const TRNG1        = TRNG.addInstance();
-const UART2        = scripting.addModule("/ti/drivers/UART2", {}, false);
-const UART21       = UART2.addInstance();
 const Settings     = scripting.addModule("/ti/posix/tirtos/Settings");
 const BIOS         = scripting.addModule("/ti/sysbios/BIOS");
 const GateMutexPri = scripting.addModule("/ti/sysbios/gates/GateMutexPri");
@@ -128,23 +126,22 @@ GPIO3.mode            = "Output";
 GPIO3.gpioPin.$assign = "DIO_5";
 
 GPIO4.$name           = "INT_1_XL";
-GPIO4.pull            = "Pull Up";
 GPIO4.gpioPin.$assign = "DIO_18";
 
 GPIO5.$name           = "INT_2_XL";
-GPIO5.pull            = "Pull Up";
 GPIO5.gpioPin.$assign = "DIO_19";
 
 GPIO6.$name           = "DRDY";
-GPIO6.pull            = "Pull Up";
 GPIO6.gpioPin.$assign = "DIO_13";
 
 GPIO7.$name           = "CS_MAG";
 GPIO7.mode            = "Output";
+GPIO7.outputStrength  = "Low";
 GPIO7.gpioPin.$assign = "DIO_14";
 
 GPIO8.$name           = "CS_XL";
 GPIO8.mode            = "Output";
+GPIO8.outputStrength  = "Low";
 GPIO8.gpioPin.$assign = "DIO_16";
 
 GPIO9.$name           = "SDIO";
@@ -152,6 +149,7 @@ GPIO9.gpioPin.$assign = "DIO_15";
 
 GPIO10.$name           = "SPC";
 GPIO10.mode            = "Output";
+GPIO10.outputStrength  = "Low";
 GPIO10.gpioPin.$assign = "DIO_17";
 
 GPIO11.$name              = "NAND_CS";
@@ -172,17 +170,15 @@ NVS3.$name                    = "NVS_JUXTA_DATA";
 NVS3.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX3";
 NVS3.internalFlash.regionBase = 0x42000;
 
-SPI1.$name               = "SPI_MEM_CONFIG";
-SPI1.spi.sclkPin.$assign = "DIO_9";
-SPI1.spi.misoPin.$assign = "DIO_6";
-SPI1.spi.mosiPin.$assign = "DIO_8";
+SPI1.$name                          = "SPI_MEM_CONFIG";
+SPI1.spi.sclkPin.$assign            = "DIO_9";
+SPI1.spi.misoPin.$assign            = "DIO_6";
+SPI1.spi.mosiPin.$assign            = "DIO_8";
+SPI1.sclkPinInstance.outputStrength = "Low";
+SPI1.mosiPinInstance.outputStrength = "Low";
+SPI1.mosiPinInstance.mode           = "Input";
 
 TRNG1.$name = "CONFIG_TRNG_0";
-
-UART21.$name              = "CONFIG_UART2";
-UART21.uart.$assign       = "UART0";
-UART21.uart.txPin.$assign = "DIO_11";
-UART21.uart.rxPin.$assign = "DIO_12";
 
 BIOS.assertsEnabled = false;
 BIOS.rtsGateType    = "BIOS_GateMutexPri";

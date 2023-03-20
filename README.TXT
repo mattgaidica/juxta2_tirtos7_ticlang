@@ -1,3 +1,5 @@
+* use internal bias RF
+
 multi_role_init:
 - multi_role_processGapMsg
 -- GAP_DEVICE_INIT_DONE_EVENT

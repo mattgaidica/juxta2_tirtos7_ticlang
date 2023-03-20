@@ -665,7 +665,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
     {
         reg |= 0x40; // auto-increment r/w
     }
-
+    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
     GPIO_write(sensbus->CLK_PIN, 1); // start high
     GPIO_write(sensbus->CS_PIN, 0); // active low
     usleep(1); // CS pin
@@ -692,8 +692,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         set_bit_value(bufp, bitPos, bitValue, len);
         usleep(SPI_HALF_PERIOD); // delay again
     }
-    GPIO_write(sensbus->CS_PIN, 1); // de-activate
-    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
+    GPIO_write(sensbus->CS_PIN, 1); // de-activate, leave as input
     return 0;
 }
 // for 3-wire SPI
@@ -729,6 +728,7 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
         usleep(SPI_HALF_PERIOD); // delay again
     }
     GPIO_write(sensbus->CS_PIN, 1); // de-activate
+    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[1]); // leave as input
     return 0;
 }
 
@@ -842,6 +842,7 @@ static void saveConfigs(void)
 
 static void juxtaSubHzTask(void)
 {
+    return;
     // exit if dumping data or connected
     if (dumpResetFlag == 0 || isConnected)
     {
@@ -870,7 +871,7 @@ static void juxtaUpdateBLEParameters(void)
 
 static void juxta1HzTask(void)
 {
-    timeoutLED(LED1);
+//    timeoutLED(LED1);
     localTime++;
 
     // if currently dumping data
@@ -878,6 +879,7 @@ static void juxta1HzTask(void)
         return;
 
     // *** NOT DUMPING BELOW DATA ***
+    // adds ~200uA
     if (GPIO_read(DRDY) == 1) // convert to interrupt?
     {
         setMag();
@@ -1065,7 +1067,7 @@ void multi_role_createTask(void)
 
 static void multi_role_init(void)
 {
-    GPIO_init();
+//    GPIO_init();
     GPIO_write(LED1, 1);
     GPIO_write(LED2, 1);
     SPI_init();
