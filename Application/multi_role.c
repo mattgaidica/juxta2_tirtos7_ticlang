@@ -738,7 +738,6 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
     return 0;
 }
 
-
 static void platform_delay(uint32_t ms)
 {
     usleep(ms * 1000);
@@ -772,6 +771,44 @@ static void blinkLED(uint8_t runOnce)
             break;
         }
     }
+}
+
+static ReturnType dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
+{
+    ReturnType ret = Flash_ProgramFailed;
+    if (dumpAddr < *addr)
+    {
+// at start: write the existing buffer to NAND, fill remaining page with 0xFF
+        if (dumpAddr == BASE && dumpCount == 0)
+        {
+            uint32_t restoreAddr = *addr;
+            uint8_t none = 0xFF;
+            while (1)
+            {
+                ret = NAND_Write(addr, buffer, &none, 1);
+                if (ret == Flash_Success)
+                    break;
+            }
+            *addr = restoreAddr; // put addr back to where it was
+        }
+// logDumpCount increments by 128 (SIMPLEPROFILE_CHAR7_LEN): goes to zero every page
+        if (dumpCount == 0)
+        {
+            FlashPageRead(dumpAddr, buffer);
+        }
+        memcpy(dataBuffer, buffer + (SIMPLEPROFILE_CHAR7_LEN * dumpCount),
+        SIMPLEPROFILE_CHAR7_LEN);
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR7,
+        SIMPLEPROFILE_CHAR7_LEN,
+                                   dataBuffer);
+        dumpCount++; // should iterate 16 times for each page
+        if (dumpCount == PAGE_DATA_SIZE / SIMPLEPROFILE_CHAR7_LEN)
+        {
+            dumpCount = 0; // reset to read page next time
+            dumpAddr += 0x1000; // this increments until logAddr
+        }
+    }
+    return ret;
 }
 
 static void setLogRecovery(uint32_t recoveryAddr, uint32_t recoveryCount,
@@ -843,9 +880,10 @@ static void loadConfigs(void)
         logAddr = 0;
     }
 
-    if (metaRecoveryCount >= JUXTA_BASE_META && metaRecoveryCount < FLASH_SIZE)
+    if (metaRecoveryAddr >= JUXTA_BASE_META && metaRecoveryAddr < FLASH_SIZE)
     {
         metaCount = metaRecoveryCount;
+        metaAddr = metaRecoveryAddr;
         readAddr = metaRecoveryAddr;
         readAddr &= 0xFFFFF000; // read from 0th column
         FlashPageRead(readAddr, metaBuffer);
@@ -857,6 +895,7 @@ static void loadConfigs(void)
         metaRecoveryAddr = JUXTA_BASE_META;
         metaAddr = JUXTA_BASE_META;
     }
+    saveConfigs(); // re-save
 }
 
 static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addScanInfo()
@@ -897,18 +936,26 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
 
 static void juxtaSubHzTask(void)
 {
-    return;
+    return; // !! TEMP
     // exit if dumping data or connected
     if (dumpResetFlag == 0 || isConnected)
     {
         return;
     }
-//    saveConfigs();
-}
 
-static void juxtaUpdateBLEParameters(void)
-{
+    // use dumpData to fill memory
+    ReturnType ret;
+    dumpAddr = JUXTA_BASE_LOGS; // reset
+    dumpCount = 0;
+    ret = dumpData(&logAddr, logBuffer,
+    JUXTA_BASE_LOGS);
+    setLogRecovery(logAddr, logCount, ret); // if page was written, save
 
+    dumpCount = 0;
+    dumpAddr = JUXTA_BASE_META; // reset
+    ret = dumpData(&metaAddr, metaBuffer,
+    JUXTA_BASE_META);
+    setMetaRecovery(metaAddr, metaCount, ret); // if page was written, save
 }
 
 static void juxta1HzTask(void)
@@ -984,44 +1031,6 @@ static void juxta1HzTask(void)
     }
 }
 
-static ReturnType dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
-{
-    ReturnType ret = Flash_ProgramFailed;
-    if (dumpAddr < *addr)
-    {
-// at start: write the existing buffer to NAND, fill remaining page with 0xFF
-        if (dumpAddr == BASE && dumpCount == 0)
-        {
-            uint32_t restoreAddr = *addr;
-            uint8_t none = 0xFF;
-            while (1)
-            {
-                ret = NAND_Write(addr, buffer, &none, 1);
-                if (ret == Flash_Success)
-                    break;
-            }
-            *addr = restoreAddr; // put addr back to where it was
-        }
-// logDumpCount increments by 128 (SIMPLEPROFILE_CHAR7_LEN): goes to zero every page
-        if (dumpCount == 0)
-        {
-            FlashPageRead(dumpAddr, buffer);
-        }
-        memcpy(dataBuffer, buffer + (SIMPLEPROFILE_CHAR7_LEN * dumpCount),
-        SIMPLEPROFILE_CHAR7_LEN);
-        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR7,
-        SIMPLEPROFILE_CHAR7_LEN,
-                                   dataBuffer);
-        dumpCount++; // should iterate 16 times for each page
-        if (dumpCount == PAGE_DATA_SIZE / SIMPLEPROFILE_CHAR7_LEN)
-        {
-            dumpCount = 0; // reset to read page next time
-            dumpAddr += 0x1000; // this increments until logAddr
-        }
-    }
-    return ret;
-}
-
 static void juxtaModeCallback(uint8_t newMode)
 {
     if (juxtaMode != newMode && newMode <= JUXTA_MODE_NUMEL)
@@ -1030,6 +1039,7 @@ static void juxtaModeCallback(uint8_t newMode)
         simpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, SIMPLEPROFILE_CHAR6_LEN,
                                    &juxtaMode);
         saveConfigs();
+        // turning off
 //        if (juxtaMode == JUXTA_MODE_SHELF || juxtaMode == JUXTA_MODE_BASE)
 //        {
 //            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_POWER_DOWN);
@@ -1185,7 +1195,7 @@ static void multi_role_init(void)
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
     lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set Output Data Rate */
-    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // turn on with juxtaMode, LSM303AGR_XL_POWER_DOWN
+    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_1Hz); // turn on with juxtaModeCallback? LSM303AGR_XL_POWER_DOWN
     /* Set accelerometer full scale */
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
     /* Enable temperature sensor */
@@ -2292,7 +2302,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
             }
             ret = dumpData(&logAddr, logBuffer,
             JUXTA_BASE_LOGS);
-            setLogRecovery(logAddr, metaCount, ret); // if page was written, save
+            setLogRecovery(logAddr, logCount, ret); // if page was written, save
         }
         else if (pValue[0] == META_DUMP_KEY)
         {
