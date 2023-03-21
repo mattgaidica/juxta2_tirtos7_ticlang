@@ -326,7 +326,6 @@ static uint8_t juxtaMode = JUXTA_MODE_NUMEL; // init mode, will not match new mo
 static uint8_t nvs_juxtaMode; // set by loadConfigs(), default: JUXTA_MODE_SHELF
 
 NVS_Handle nvsConfigHandle;
-NVS_Handle nvsDataHandle;
 NVS_Attrs regionAttrs;
 static uint32_t nvsConfigBuffer[JUXTA_CONFIG_OFFSET_NUMEL];
 static uint32_t localTime = 0;
@@ -370,9 +369,9 @@ static uint32_t voltage_uv = 0;
 static uint8_t has_NAND, has_XL, has_MG = 0;
 
 // addresses for NAND memory, tracked in NAND_Write()
-static uint32_t logAddr, metaAddr; // recall from NVS
+static uint32_t logAddr, logRecoveryAddr, metaAddr, metaRecoveryAddr; // recall from NVS
 // counts track log/metaAddr but are atomic
-static uint32_t logCount, metaCount = 0;
+static uint32_t logCount, logRecoveryCount, metaCount, metaRecoveryCount = 0;
 // volatile buffers for collection
 static uint8_t logBuffer[PAGE_SIZE], metaBuffer[PAGE_SIZE]; // 2176, PAGE_DATA_SIZE = 2048, use for R/W
 // entries = single units of collected data
@@ -523,6 +522,7 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
                       uint16_t len)
 {
     ReturnType ret = Flash_ProgramFailed;
+    uint32_t nvsAddr = *addr;
     uint32_t MAX_MEM_LOC = FLASH_SIZE; // meta memory goes to end
     uint16_t i;
 
@@ -542,11 +542,12 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
 // check if area needs to be erased
         if (ADDRESS_2_PAGE(*addr) == 0 && ADDRESS_2_COL(*addr) == 0) // 0th page in block, 0th col
         {
-            ret = FlashBlockErase(*addr); // wipe 64 pages
+            ret = FlashBlockErase(*addr); // wipe next 64 pages
             if (ret != Flash_Success)
             {
-                return ret; // return early
+                return ret; // return early, !! but then what?
             }
+            ret = Flash_ProgramFailed; // reset, return hereon should reflect FlashPageProgram()
         }
         *addr += 1;
         if (ADDRESS_2_COL(*addr) == PAGE_DATA_SIZE) // end of page/last col: write it
@@ -616,6 +617,9 @@ static void setTemp(void)
         lsm303agr_temperature_raw_get(&dev_ctx_xl, &data_raw_temperature);
         temperature_degC = lsm303agr_from_lsb_hr_to_celsius(
                 data_raw_temperature);
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5,
+        SIMPLEPROFILE_CHAR5_LEN,
+                                   &temperature_degC);
     }
 }
 
@@ -624,6 +628,8 @@ static void setVoltage(void)
     ADC_convert(adc_vBatt, &data_raw_voltage);
     voltage_uv = (ADC_convertToMicroVolts(adc_vBatt, data_raw_voltage) * 250)
             / 100;
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN,
+                               &voltage_uv);
 }
 
 uint8_t get_bit_value(const uint8_t *data, uint16_t n)
@@ -665,7 +671,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
     {
         reg |= 0x40; // auto-increment r/w
     }
-    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
+
     GPIO_write(sensbus->CLK_PIN, 1); // start high
     GPIO_write(sensbus->CS_PIN, 0); // active low
     usleep(1); // CS pin
@@ -692,7 +698,8 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         set_bit_value(bufp, bitPos, bitValue, len);
         usleep(SPI_HALF_PERIOD); // delay again
     }
-    GPIO_write(sensbus->CS_PIN, 1); // de-activate, leave as input
+    GPIO_write(sensbus->CS_PIN, 1); // de-activate
+    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
     return 0;
 }
 // for 3-wire SPI
@@ -728,9 +735,9 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
         usleep(SPI_HALF_PERIOD); // delay again
     }
     GPIO_write(sensbus->CS_PIN, 1); // de-activate
-    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[1]); // leave as input
     return 0;
 }
+
 
 static void platform_delay(uint32_t ms)
 {
@@ -767,6 +774,91 @@ static void blinkLED(uint8_t runOnce)
     }
 }
 
+static void setLogRecovery(uint32_t recoveryAddr, uint32_t recoveryCount,
+                           ReturnType ret)
+{
+    if (ret == Flash_Success)
+    {
+        logRecoveryAddr = recoveryAddr;
+        logRecoveryCount = recoveryCount;
+        saveConfigs();
+    }
+}
+
+static void setMetaRecovery(uint32_t recoveryAddr, uint32_t recoveryCount,
+                            ReturnType ret)
+{
+    if (ret == Flash_Success)
+    {
+        metaRecoveryAddr = recoveryAddr;
+        metaRecoveryCount = recoveryCount;
+        saveConfigs();
+    }
+}
+
+static void saveConfigs(void)
+{
+    NVS_getAttrs(nvsConfigHandle, &regionAttrs);
+    NVS_erase(nvsConfigHandle, 0, regionAttrs.sectorSize); // erase all each time
+// nvsConfigBuffer is uint32 (so is pointer that increments)
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT] = logRecoveryCount;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR] = logRecoveryAddr;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT] = metaRecoveryCount;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR] = metaRecoveryAddr;
+    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE] = (uint32_t) juxtaMode;
+    NVS_write(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
+              sizeof(nvsConfigBuffer),
+              NVS_WRITE_POST_VERIFY);
+}
+
+static void loadConfigs(void)
+{
+
+    NVS_read(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
+             sizeof(nvsConfigBuffer));
+    logRecoveryCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT];
+    logRecoveryAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR];
+    metaRecoveryCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT];
+    metaRecoveryAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR];
+    nvs_juxtaMode = (uint8_t) nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE];
+    if (nvs_juxtaMode >= JUXTA_MODE_NUMEL)
+    {
+        nvs_juxtaMode = JUXTA_MODE_SHELF; // default
+    }
+
+    uint32_t readAddr;
+    if (logRecoveryAddr < JUXTA_BASE_META)
+    {
+        logCount = logRecoveryCount;
+        logAddr = logRecoveryAddr;
+        readAddr = logRecoveryAddr;
+        readAddr &= 0xFFFFF000; // read from 0th column
+        FlashPageRead(readAddr, logBuffer);
+    }
+    else
+    {
+        logRecoveryCount = 0;
+        logCount = 0;
+        logRecoveryAddr = 0;
+        logAddr = 0;
+    }
+
+    if (metaRecoveryCount >= JUXTA_BASE_META && metaRecoveryCount < FLASH_SIZE)
+    {
+        metaCount = metaRecoveryCount;
+        readAddr = metaRecoveryAddr;
+        readAddr &= 0xFFFFF000; // read from 0th column
+        FlashPageRead(readAddr, metaBuffer);
+    }
+    else
+    {
+        metaRecoveryCount = 0;
+        metaCount = 0;
+        metaRecoveryAddr = JUXTA_BASE_META;
+        metaAddr = JUXTA_BASE_META;
+    }
+}
+
 static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addScanInfo()
 {
 // see: scanList, numScanRes
@@ -776,6 +868,8 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
     {
         for (i = 0; i < numScanRes; i++)
         {
+            uint32_t tempAddr = logAddr;
+            uint32_t tempCount = logCount;
             // load buffer
             uint8_t uuid[ATT_BT_UUID_SIZE] =
                     { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
@@ -789,55 +883,16 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
                    sizeof(scanList[i].rssi));
             iEntry += sizeof(scanList[i].rssi);
             memcpy(logEntry + iEntry, &localTime, sizeof(localTime));
-            NAND_Write(&logAddr, logBuffer, logEntry, JUXTA_LOG_ENTRY_SIZE);
+            ReturnType ret = NAND_Write(&logAddr, logBuffer, logEntry,
+            JUXTA_LOG_ENTRY_SIZE);
             logCount++;
+            setLogRecovery(tempAddr, tempCount, ret); // if a page was written, commit these
         }
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
+                                   &logCount);
         timeoutLED(LED2);
         numScanRes = 0;
     }
-}
-
-static void loadConfigs(void)
-{
-
-    NVS_read(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
-             sizeof(nvsConfigBuffer));
-    logCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT];
-    logAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR];
-    metaCount = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT];
-    metaAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR];
-    nvs_juxtaMode = (uint8_t) nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE];
-    if (nvs_juxtaMode >= JUXTA_MODE_NUMEL)
-    {
-        nvs_juxtaMode = JUXTA_MODE_SHELF; // default
-    }
-
-    NVS_read(nvsDataHandle, 0, (void*) logBuffer,
-    PAGE_DATA_SIZE);
-    NVS_read(nvsDataHandle, 0, (void*) metaBuffer,
-    PAGE_DATA_SIZE);
-}
-
-static void saveConfigs(void)
-{
-    NVS_getAttrs(nvsConfigHandle, &regionAttrs);
-    NVS_erase(nvsConfigHandle, 0, regionAttrs.sectorSize); // erase all each time
-// nvsConfigBuffer is uint32 (so is pointer that increments)
-    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGCOUNT] = logCount;
-    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_LOGADDR] = logAddr;
-    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METACOUNT] = metaCount;
-    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR] = metaAddr;
-    nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE] = (uint32_t) juxtaMode;
-    NVS_write(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
-              sizeof(nvsConfigBuffer),
-              NVS_WRITE_POST_VERIFY);
-
-    NVS_getAttrs(nvsDataHandle, &regionAttrs);
-    NVS_erase(nvsDataHandle, 0, regionAttrs.sectorSize); // erase all each time
-    NVS_write(nvsDataHandle, 0, (void*) logBuffer, PAGE_DATA_SIZE,
-    NVS_WRITE_POST_VERIFY); // no offset
-    NVS_write(nvsDataHandle, PAGE_DATA_SIZE, (void*) metaBuffer, PAGE_DATA_SIZE,
-    NVS_WRITE_POST_VERIFY); // offset one page
 }
 
 static void juxtaSubHzTask(void)
@@ -848,31 +903,20 @@ static void juxtaSubHzTask(void)
     {
         return;
     }
-    saveConfigs();
+//    saveConfigs();
 }
 
 static void juxtaUpdateBLEParameters(void)
 {
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR1, SIMPLEPROFILE_CHAR1_LEN,
-                               &logCount);
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2,
-    SIMPLEPROFILE_CHAR2_LEN,
-                               &metaCount);
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
-                               &localTime);
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR4, SIMPLEPROFILE_CHAR4_LEN,
-                               &voltage_uv);
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR5,
-    SIMPLEPROFILE_CHAR5_LEN,
-                               &temperature_degC);
-    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, SIMPLEPROFILE_CHAR6_LEN,
-                               &juxtaMode);
+
 }
 
 static void juxta1HzTask(void)
 {
-//    timeoutLED(LED1);
+    timeoutLED(LED1);
     localTime++;
+    simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
+                               &localTime);
 
     // if currently dumping data
     if (dumpResetFlag == 0)
@@ -899,24 +943,21 @@ static void juxta1HzTask(void)
     }
     juxtaDurationCount++;
 
-    if (isConnected)
-    {
-        setVoltage();
-        setTemp();
-        juxtaUpdateBLEParameters(); // refresh
-    }
-    else
+    setVoltage();
+    setTemp();
+
+    if (!isConnected)
     { // ie, skip when connected
         if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
         {
             setXL();
-            setVoltage();
-            setTemp();
             uint8_t iEntry = 0;
             uint8_t uuid[ATT_BT_UUID_SIZE] =
                     { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
                             SIMPLEPROFILE_SERV_UUID) };
 
+            uint32_t tempAddr = metaAddr;
+            uint32_t tempCount = metaCount;
             memcpy(metaEntry, uuid, sizeof(uuid));
             iEntry += sizeof(uuid); // int16
             memcpy(metaEntry + iEntry, &data_raw_temperature,
@@ -932,15 +973,20 @@ static void juxta1HzTask(void)
                    sizeof(data_raw_magnetic));
             iEntry += sizeof(data_raw_magnetic); // int16[3]
             memcpy(metaEntry + iEntry, &localTime, sizeof(localTime)); // uint32
-            NAND_Write(&metaAddr, metaBuffer, metaEntry,
+            ReturnType ret = NAND_Write(&metaAddr, metaBuffer, metaEntry,
             JUXTA_META_ENTRY_SIZE);
             metaCount++;
+            simpleProfile_SetParameter(SIMPLEPROFILE_CHAR2,
+            SIMPLEPROFILE_CHAR2_LEN,
+                                       &metaCount);
+            setMetaRecovery(tempAddr, tempCount, ret); // if a page was written, commit these
         }
     }
 }
 
-static void dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
+static ReturnType dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
 {
+    ReturnType ret = Flash_ProgramFailed;
     if (dumpAddr < *addr)
     {
 // at start: write the existing buffer to NAND, fill remaining page with 0xFF
@@ -950,11 +996,11 @@ static void dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
             uint8_t none = 0xFF;
             while (1)
             {
-                ReturnType ret = NAND_Write(addr, buffer, &none, 1);
+                ret = NAND_Write(addr, buffer, &none, 1);
                 if (ret == Flash_Success)
                     break;
             }
-            *addr = restoreAddr; // put logAddr back to where it was
+            *addr = restoreAddr; // put addr back to where it was
         }
 // logDumpCount increments by 128 (SIMPLEPROFILE_CHAR7_LEN): goes to zero every page
         if (dumpCount == 0)
@@ -973,6 +1019,7 @@ static void dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
             dumpAddr += 0x1000; // this increments until logAddr
         }
     }
+    return ret;
 }
 
 static void juxtaModeCallback(uint8_t newMode)
@@ -980,13 +1027,17 @@ static void juxtaModeCallback(uint8_t newMode)
     if (juxtaMode != newMode && newMode <= JUXTA_MODE_NUMEL)
     {
         juxtaMode = newMode;
-        juxtaUpdateBLEParameters(); // refresh
+        simpleProfile_SetParameter(SIMPLEPROFILE_CHAR6, SIMPLEPROFILE_CHAR6_LEN,
+                                   &juxtaMode);
         saveConfigs();
-        if (juxtaMode == JUXTA_MODE_SHELF || juxtaMode == JUXTA_MODE_BASE) {
-            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_POWER_DOWN);
-        } else {
-            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_1Hz);
-        }
+//        if (juxtaMode == JUXTA_MODE_SHELF || juxtaMode == JUXTA_MODE_BASE)
+//        {
+//            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_POWER_DOWN);
+//        }
+//        else
+//        {
+//            lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz);
+//        }
     }
 
 // periodic
@@ -1087,8 +1138,10 @@ static void multi_role_init(void)
     memcpy(attDeviceName + 3, pStrAddr, 12); // include JX_
 
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
-    nvsDataHandle = NVS_open(NVS_JUXTA_DATA, NULL);
-// !! check for null handles?
+    // note: this has to be in 3-wire so CS is manually controlled
+    SPI_Params_init(&spiParams);
+    SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
+    has_NAND = NAND_Init();
     loadConfigs();
 
     dev_ctx_xl.write_reg = platform_write;
@@ -1132,7 +1185,7 @@ static void multi_role_init(void)
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
     lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set Output Data Rate */
-    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_POWER_DOWN); // turn on with juxtaMode
+    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // turn on with juxtaMode, LSM303AGR_XL_POWER_DOWN
     /* Set accelerometer full scale */
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
     /* Enable temperature sensor */
@@ -1151,11 +1204,6 @@ static void multi_role_init(void)
     /* Set magnetometer in continuous mode */
 //    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
-
-// note: this has to be in 3-wire so CS is manually controlled
-    SPI_Params_init(&spiParams);
-    SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
-    has_NAND = NAND_Init();
 
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
@@ -2176,6 +2224,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
 // some chars do not call simpleProfile_GetParameter, so set retProfile invalid here
     uint8_t len = 0;
     bStatus_t retProfile = INVALIDPARAMETER;
+    ReturnType ret;
 
     switch (paramId)
     {
@@ -2210,14 +2259,18 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR1, pValue);
 // treat any write as erasing memory
         logCount = 0;
+        logRecoveryCount = 0;
         logAddr = JUXTA_BASE_LOGS;
+        logRecoveryAddr = JUXTA_BASE_LOGS;
         saveConfigs();
         break;
     case SIMPLEPROFILE_CHAR2: // META COUNT
         retProfile = simpleProfile_GetParameter(SIMPLEPROFILE_CHAR2, pValue);
 // treat any write as erasing memory
         metaCount = 0;
+        metaRecoveryCount = 0;
         metaAddr = JUXTA_BASE_META;
+        metaRecoveryAddr = JUXTA_BASE_META;
         saveConfigs();
         break;
     case SIMPLEPROFILE_CHAR3: // LOCAL TIME
@@ -2237,8 +2290,9 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
                 dumpResetFlag = 0;
                 dumpAddr = JUXTA_BASE_LOGS; // reset
             }
-            dumpData(&logAddr, logBuffer,
+            ret = dumpData(&logAddr, logBuffer,
             JUXTA_BASE_LOGS);
+            setLogRecovery(logAddr, metaCount, ret); // if page was written, save
         }
         else if (pValue[0] == META_DUMP_KEY)
         {
@@ -2247,8 +2301,9 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
                 dumpResetFlag = 0;
                 dumpAddr = JUXTA_BASE_META; // reset
             }
-            dumpData(&metaAddr, metaBuffer,
+            ret = dumpData(&metaAddr, metaBuffer,
             JUXTA_BASE_META);
+            setMetaRecovery(metaAddr, metaCount, ret); // if page was written, save
         }
         else if (pValue[0] == DUMP_RESET_KEY)
         {
