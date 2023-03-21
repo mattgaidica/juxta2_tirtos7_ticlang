@@ -54,7 +54,7 @@
  * CONSTANTS
  */
 
-#define MAG_THRESHOLD_MG    5000
+#define MAG_THRESHOLD_MG    2000
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
 #define META_DUMP_KEY       0x22
@@ -605,6 +605,11 @@ bool isMagnetPresent(void)
     return false;
 }
 
+static void readMgInt(void) {
+    lsm303agr_int_source_reg_m_t reg;
+    lsm303agr_mag_int_gen_source_get(&dev_ctx_mg, &reg);
+}
+
 static void setTemp(void)
 {
     /* Read output only if new value is available */
@@ -960,8 +965,10 @@ static void juxtaSubHzTask(void)
 
 static void juxta1HzTask(void)
 {
-    timeoutLED(LED1);
     localTime++;
+    if (GPIO_read(DRDY))
+        return;
+    timeoutLED(LED1);
     simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
                                &localTime);
 
@@ -970,13 +977,6 @@ static void juxta1HzTask(void)
         return;
 
     // *** NOT DUMPING BELOW DATA ***
-    // adds ~200uA
-    if (GPIO_read(DRDY) == 1) // convert to interrupt?
-    {
-        setMag();
-        lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
-    }
-
     if (scanInitDone && advertInitDone)
     {
         if (juxtaMode == JUXTA_MODE_NUMEL) // init
@@ -1206,14 +1206,25 @@ static void multi_role_init(void)
     lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz); // but use single trigger below
     lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
     lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+    lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+    lsm303agr_int_crtl_reg_m_t int_ctrl_reg;
+    int_ctrl_reg.iea = 0; // active low
+    int_ctrl_reg.iel = 1; // latch
+    int_ctrl_reg.ien = 1; // enable int
+    int_ctrl_reg.xien = 1; // axis enabled
+    int_ctrl_reg.yien = 1; // axis enabled
+    int_ctrl_reg.zien = 1; // axis enabled
+    lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
+    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, MAG_THRESHOLD_MG);
+
     /* Set / Reset magnetic sensor mode */
     lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,
                                    LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
     /* Enable temperature compensation on mag sensor */
-    lsm303agr_mag_offset_temp_comp_set(&dev_ctx_mg, PROPERTY_ENABLE);
+//    lsm303agr_mag_offset_temp_comp_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set magnetometer in continuous mode */
 //    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
-    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_SINGLE_TRIGGER);
+    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_CONTINUOUS_MODE); // LSM303AGR_SINGLE_TRIGGER
 
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
