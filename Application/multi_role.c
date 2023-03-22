@@ -53,8 +53,12 @@
 /*********************************************************************
  * CONSTANTS
  */
+#define ICEPICK_ID  0x1BB7702F
 
-#define MAG_THRESHOLD_MG    2000
+#define INT_THRESHOLD_MG    2000
+#define INT_THRESHOLD_XL    0x04
+#define INT_DURATION_XL     0
+
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
 #define META_DUMP_KEY       0x22
@@ -367,6 +371,7 @@ int_fast16_t adcRes;
 static uint16_t data_raw_voltage;
 static uint32_t voltage_uv = 0;
 static uint8_t has_NAND, has_XL, has_MG = 0;
+static uint8_t xl_ref_buff;
 
 // addresses for NAND memory, tracked in NAND_Write()
 static uint32_t logAddr, logRecoveryAddr, metaAddr, metaRecoveryAddr; // recall from NVS
@@ -595,17 +600,14 @@ static void setMag(void)
     }
 }
 
-bool isMagnetPresent(void)
+static void readXlInt(void)
 {
-    if (fabs(magnetic_mG[0]) + fabs(magnetic_mG[1])
-            + fabs(magnetic_mG[2]) > MAG_THRESHOLD_MG)
-    {
-        return true;
-    }
-    return false;
+    lsm303agr_int1_src_a_t int1_src_reg;
+    lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg);
 }
 
-static void readMgInt(void) {
+static void readMgInt(void)
+{
     lsm303agr_int_source_reg_m_t reg;
     lsm303agr_mag_int_gen_source_get(&dev_ctx_mg, &reg);
 }
@@ -966,8 +968,11 @@ static void juxtaSubHzTask(void)
 static void juxta1HzTask(void)
 {
     localTime++;
-    if (GPIO_read(DRDY))
-        return;
+    readXlInt();
+    GPIO_write(LED1, GPIO_read(INT_MAG));
+    GPIO_write(LED2, GPIO_read(INT_1_XL));
+
+    return;
     timeoutLED(LED1);
     simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
                                &localTime);
@@ -1085,16 +1090,16 @@ static void juxtaModeCallback(uint8_t newMode)
         break;
     }
 
-    if (isMagnetPresent())
-    {
-        // !! implement "scan with magnet present" here
-        wantsToAdvertise = true; // force
-        GPIO_write(LED2, 1);
-    }
-    else
-    {
-        GPIO_write(LED2, 0);
-    }
+//    if (isMagnetPresent())
+//    {
+//        // !! implement "scan with magnet present" here
+//        wantsToAdvertise = true; // force
+//        GPIO_write(LED2, 1);
+//    }
+//    else
+//    {
+//        GPIO_write(LED2, 0);
+//    }
 
     if (isConnected) // override
     {
@@ -1195,7 +1200,7 @@ static void multi_role_init(void)
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
     lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     /* Set Output Data Rate */
-    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_1Hz); // turn on with juxtaModeCallback? LSM303AGR_XL_POWER_DOWN
+    lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // LSM303AGR_XL_POWER_DOWN
     /* Set accelerometer full scale */
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
     /* Enable temperature sensor */
@@ -1203,19 +1208,65 @@ static void multi_role_init(void)
     /* Set device in continuous mode */
     lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
 
-    lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz); // but use single trigger below
+    // setup xl interrupt, see AN4825 pg.37
+    lsm303agr_xl_high_pass_int_conf_set(&dev_ctx_xl, LSM303AGR_ON_INT1_GEN); // CTRL_REG2_A
+    lsm303agr_xl_high_pass_mode_set(&dev_ctx_xl, LSM303AGR_NORMAL_WITH_RST); // CTRL_REG2_A - LSM303AGR_AUTORST_ON_INT
+    lsm303agr_xl_high_pass_on_outputs_set(&dev_ctx_xl,
+    PROPERTY_ENABLE); // CTRL_REG2_A
+    lsm303agr_xl_high_pass_bandwidth_set(&dev_ctx_xl, LSM303AGR_LIGHT); // CTRL_REG2_A
+    lsm303agr_ctrl_reg3_a_t ctrl_reg3 = { 0 };
+    ctrl_reg3.i1_aoi1 = 1;
+    lsm303agr_xl_pin_int1_config_set(&dev_ctx_xl, &ctrl_reg3); // CTRL_REG3_A
+
+    lsm303agr_xl_int1pin_notification_mode_set(&dev_ctx_xl,
+                                               LSM303AGR_INT1_LATCHED); // CTRL_REG5_A
+    lsm303agr_xl_int1_gen_threshold_set(&dev_ctx_xl,
+    INT_THRESHOLD_XL); // INT1_THS_A
+    lsm303agr_xl_int1_gen_duration_set(&dev_ctx_xl,
+    INT_DURATION_XL); // INT1_DURATION_A
+    lsm303agr_xl_filter_reference_get(&dev_ctx_xl, &xl_ref_buff); // read/set ref: REFERENCE_A
+    lsm303agr_int1_cfg_a_t int1_cfg_reg = { 0 }; // OR (not AND) the events
+    int1_cfg_reg.xhie = 1; // high event
+//    int1_cfg_reg.xlie = 1; // low event
+    int1_cfg_reg.yhie = 1;
+//    int1_cfg_reg.ylie = 1;
+    int1_cfg_reg.zhie = 1;
+//    int1_cfg_reg.zlie = 1;
+    lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_reg); // INT1_CFG_A
+
+    while (1)
+    {
+        if (GPIO_read(INT_1_XL) == 0)
+        {
+            lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_reg); // INT1_CFG_A
+            GPIO_write(LED2, 0);
+            GPIO_write(LED1, 0);
+        }
+        else // wakeup latched
+        {
+            GPIO_write(LED2, 1);
+            lsm303agr_int1_src_a_t int1_src_reg;
+            lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg);
+            GPIO_write(LED1, (uint8_t) int1_src_reg.ia);
+            usleep(50000);
+        }
+    }
+
+    lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz);
     lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
     lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
     lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
-    lsm303agr_int_crtl_reg_m_t int_ctrl_reg;
-    int_ctrl_reg.iea = 0; // active low
+    // setup mg interrupt
+    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
+    lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
     int_ctrl_reg.iel = 1; // latch
     int_ctrl_reg.ien = 1; // enable int
     int_ctrl_reg.xien = 1; // axis enabled
     int_ctrl_reg.yien = 1; // axis enabled
     int_ctrl_reg.zien = 1; // axis enabled
     lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
-    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, MAG_THRESHOLD_MG);
+
+    uint32_t ct = Clock_getTicks();
 
     /* Set / Reset magnetic sensor mode */
     lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,

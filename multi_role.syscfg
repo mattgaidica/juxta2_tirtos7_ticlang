@@ -130,7 +130,7 @@ GPIO4.gpioPin.$assign = "DIO_18";
 GPIO5.$name           = "INT_2_XL";
 GPIO5.gpioPin.$assign = "DIO_19";
 
-GPIO6.$name           = "DRDY";
+GPIO6.$name           = "INT_MAG";
 GPIO6.gpioPin.$assign = "DIO_13";
 
 GPIO7.$name           = "CS_MAG";
