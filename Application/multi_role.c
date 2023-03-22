@@ -53,9 +53,7 @@
 /*********************************************************************
  * CONSTANTS
  */
-#define ICEPICK_ID  0x1BB7702F
-
-#define INT_THRESHOLD_MG    2000
+#define INT_THRESHOLD_MG    5000
 #define INT_THRESHOLD_XL    0x04
 #define INT_DURATION_XL     0
 
@@ -600,16 +598,27 @@ static void setMag(void)
     }
 }
 
-static void readXlInt(void)
+static bool readXlInt(void)
 {
-    lsm303agr_int1_src_a_t int1_src_reg;
-    lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg);
+    lsm303agr_int1_src_a_t reg;
+    if (GPIO_read(INT_1_XL) == 1) // XL is active-high
+    {
+        lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &reg); // clear it
+        return true;
+    }
+    return false;
 }
 
-static void readMgInt(void)
+static bool readMgInt(void)
 {
     lsm303agr_int_source_reg_m_t reg;
-    lsm303agr_mag_int_gen_source_get(&dev_ctx_mg, &reg);
+    if (GPIO_read(INT_MAG) == 0) // MG is active-low
+    {
+        // currently non-latching, so no need to clear interrupt
+//        lsm303agr_mag_int_gen_source_get(&dev_ctx_mg, &reg); // clear it
+        return true;
+    }
+    return false;
 }
 
 static void setTemp(void)
@@ -968,11 +977,10 @@ static void juxtaSubHzTask(void)
 static void juxta1HzTask(void)
 {
     localTime++;
-    readXlInt();
-    GPIO_write(LED1, GPIO_read(INT_MAG));
-    GPIO_write(LED2, GPIO_read(INT_1_XL));
-
+    GPIO_write(LED1, readXlInt());
+    GPIO_write(LED2, readMgInt());
     return;
+
     timeoutLED(LED1);
     simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
                                &localTime);
@@ -1170,23 +1178,19 @@ static void multi_role_init(void)
     /* Check device ID */
     lsm303agr_xl_spi_mode_set(&dev_ctx_xl, LSM303AGR_SPI_3_WIRE);
     whoamI = 0;
-    lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
-    while (whoamI != LSM303AGR_ID_XL)
+    do
     {
-        lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
-        blinkLED(1); // not found, blink -> return
     }
+    while (whoamI != LSM303AGR_ID_XL);
     has_XL = 1; // !! needs integration
     lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
     whoamI = 0;
-    lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
-    while (whoamI != LSM303AGR_ID_MG)
+    do
     {
-        lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
         lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
-        blinkLED(1);  // not found, blink -> return
     }
+    while (whoamI != LSM303AGR_ID_MG);
     has_MG = 1; // !! needs integration
     /* Restore default configuration for magnetometer */
     lsm303agr_mag_reset_set(&dev_ctx_mg, PROPERTY_ENABLE);
@@ -1196,16 +1200,10 @@ static void multi_role_init(void)
     }
     while (rst);
 
-    /* Enable Block Data Update */
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
-    lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
-    /* Set Output Data Rate */
     lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // LSM303AGR_XL_POWER_DOWN
-    /* Set accelerometer full scale */
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
-    /* Enable temperature sensor */
     lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE);
-    /* Set device in continuous mode */
     lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
 
     // setup xl interrupt, see AN4825 pg.37
@@ -1217,7 +1215,6 @@ static void multi_role_init(void)
     lsm303agr_ctrl_reg3_a_t ctrl_reg3 = { 0 };
     ctrl_reg3.i1_aoi1 = 1;
     lsm303agr_xl_pin_int1_config_set(&dev_ctx_xl, &ctrl_reg3); // CTRL_REG3_A
-
     lsm303agr_xl_int1pin_notification_mode_set(&dev_ctx_xl,
                                                LSM303AGR_INT1_LATCHED); // CTRL_REG5_A
     lsm303agr_xl_int1_gen_threshold_set(&dev_ctx_xl,
@@ -1226,57 +1223,38 @@ static void multi_role_init(void)
     INT_DURATION_XL); // INT1_DURATION_A
     lsm303agr_xl_filter_reference_get(&dev_ctx_xl, &xl_ref_buff); // read/set ref: REFERENCE_A
     lsm303agr_int1_cfg_a_t int1_cfg_reg = { 0 }; // OR (not AND) the events
-    int1_cfg_reg.xhie = 1; // high event
-//    int1_cfg_reg.xlie = 1; // low event
+    int1_cfg_reg.xhie = 1; // only use high events
     int1_cfg_reg.yhie = 1;
-//    int1_cfg_reg.ylie = 1;
     int1_cfg_reg.zhie = 1;
-//    int1_cfg_reg.zlie = 1;
     lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_reg); // INT1_CFG_A
-
-    while (1)
+    lsm303agr_int1_src_a_t int1_src_reg;
+    do // reset interrupt
     {
-        if (GPIO_read(INT_1_XL) == 0)
-        {
-            lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_reg); // INT1_CFG_A
-            GPIO_write(LED2, 0);
-            GPIO_write(LED1, 0);
-        }
-        else // wakeup latched
-        {
-            GPIO_write(LED2, 1);
-            lsm303agr_int1_src_a_t int1_src_reg;
-            lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg);
-            GPIO_write(LED1, (uint8_t) int1_src_reg.ia);
-            usleep(50000);
-        }
+        lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg);
     }
+    while (int1_src_reg.ia);
 
+    // MG SECTION
+    lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz);
     lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
+    /* Set / Reset magnetic sensor mode */
+    lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,
+                                   LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
+    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_CONTINUOUS_MODE); // LSM303AGR_SINGLE_TRIGGER
     lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
     lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
     // setup mg interrupt
     lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
     lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
-    int_ctrl_reg.iel = 1; // latch
+    //    int_ctrl_reg.iel = 1; // latch
     int_ctrl_reg.ien = 1; // enable int
     int_ctrl_reg.xien = 1; // axis enabled
     int_ctrl_reg.yien = 1; // axis enabled
     int_ctrl_reg.zien = 1; // axis enabled
     lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
 
-    uint32_t ct = Clock_getTicks();
-
-    /* Set / Reset magnetic sensor mode */
-    lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,
-                                   LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
-    /* Enable temperature compensation on mag sensor */
-//    lsm303agr_mag_offset_temp_comp_set(&dev_ctx_mg, PROPERTY_ENABLE);
-    /* Set magnetometer in continuous mode */
-//    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
-    lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_CONTINUOUS_MODE); // LSM303AGR_SINGLE_TRIGGER
-
+    //    uint32_t ct = Clock_getTicks();
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
 
