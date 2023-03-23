@@ -598,27 +598,36 @@ static void setMag(void)
     }
 }
 
-static bool readXlInt(void)
+static void clearIntXL(void)
 {
-    lsm303agr_int1_src_a_t reg;
-    if (GPIO_read(INT_1_XL) == 1) // XL is active-high
+    lsm303agr_int1_src_a_t int1_src_reg_a;
+    do
     {
-        lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &reg); // clear it
-        return true;
+        lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg_a);
     }
-    return false;
+    while (!GPIO_read(INT_1_XL));
 }
 
-static bool readMgInt(void)
+void intXL(uint_least8_t index)
 {
-    lsm303agr_int_source_reg_m_t reg;
-    if (GPIO_read(INT_MAG) == 0) // MG is active-low
+    GPIO_write(LED1, 1);
+    clearIntXL(); // !! put this somewhere after stuff is done
+}
+
+static void clearIntMG(void)
+{
+    lsm303agr_int_source_reg_m_t int_source_reg_m;
+    do
     {
-        // currently non-latching, so no need to clear interrupt
-//        lsm303agr_mag_int_gen_source_get(&dev_ctx_mg, &reg); // clear it
-        return true;
+        lsm303agr_mag_int_gen_source_get(&dev_ctx_mg, &int_source_reg_m);
     }
-    return false;
+    while (!GPIO_read(INT_MAG));
+}
+
+void intMG(uint_least8_t index)
+{
+    GPIO_write(LED2, 1);
+    clearIntMG(); // !! put this somewhere after stuff is done
 }
 
 static void setTemp(void)
@@ -953,13 +962,15 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
 static void juxtaSubHzTask(void)
 {
     return; // !! TEMP
-    // exit if dumping data or connected
+// exit if dumping data or connected
     if (dumpResetFlag == 0 || isConnected)
     {
         return;
     }
 
-    // use dumpData to fill memory
+// !! if everything is event-driven, make sure there was a change in buffer
+// !! maybe use lastMetaAddr as comparison?
+// use dumpData to fill memory
     ReturnType ret;
     dumpAddr = JUXTA_BASE_LOGS; // reset
     dumpCount = 0;
@@ -977,19 +988,18 @@ static void juxtaSubHzTask(void)
 static void juxta1HzTask(void)
 {
     localTime++;
-    GPIO_write(LED1, readXlInt());
-    GPIO_write(LED2, readMgInt());
+    shutdownLEDs();
     return;
 
     timeoutLED(LED1);
     simpleProfile_SetParameter(SIMPLEPROFILE_CHAR3, SIMPLEPROFILE_CHAR3_LEN,
                                &localTime);
 
-    // if currently dumping data
+// if currently dumping data
     if (dumpResetFlag == 0)
         return;
 
-    // *** NOT DUMPING BELOW DATA ***
+// *** NOT DUMPING BELOW DATA ***
     if (scanInitDone && advertInitDone)
     {
         if (juxtaMode == JUXTA_MODE_NUMEL) // init
@@ -1161,7 +1171,7 @@ static void multi_role_init(void)
     memcpy(attDeviceName + 3, pStrAddr, 12); // include JX_
 
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
-    // note: this has to be in 3-wire so CS is manually controlled
+// note: this has to be in 3-wire so CS is manually controlled
     SPI_Params_init(&spiParams);
     SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
     has_NAND = NAND_Init();
@@ -1206,7 +1216,7 @@ static void multi_role_init(void)
     lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE);
     lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
 
-    // setup xl interrupt, see AN4825 pg.37
+// setup xl interrupt, see AN4825 pg.37
     lsm303agr_xl_high_pass_int_conf_set(&dev_ctx_xl, LSM303AGR_ON_INT1_GEN); // CTRL_REG2_A
     lsm303agr_xl_high_pass_mode_set(&dev_ctx_xl, LSM303AGR_NORMAL_WITH_RST); // CTRL_REG2_A - LSM303AGR_AUTORST_ON_INT
     lsm303agr_xl_high_pass_on_outputs_set(&dev_ctx_xl,
@@ -1222,19 +1232,18 @@ static void multi_role_init(void)
     lsm303agr_xl_int1_gen_duration_set(&dev_ctx_xl,
     INT_DURATION_XL); // INT1_DURATION_A
     lsm303agr_xl_filter_reference_get(&dev_ctx_xl, &xl_ref_buff); // read/set ref: REFERENCE_A
+    lsm303agr_ctrl_reg6_a_t ctrl_reg6_a = { 0 };
+    ctrl_reg6_a.h_lactive = 1; // interrupt active low
+    lsm303agr_xl_pin_int2_config_set(&dev_ctx_xl, &ctrl_reg6_a); // CTRL_REG6_A
     lsm303agr_int1_cfg_a_t int1_cfg_reg = { 0 }; // OR (not AND) the events
     int1_cfg_reg.xhie = 1; // only use high events
     int1_cfg_reg.yhie = 1;
     int1_cfg_reg.zhie = 1;
     lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_reg); // INT1_CFG_A
-    lsm303agr_int1_src_a_t int1_src_reg;
-    do // reset interrupt
-    {
-        lsm303agr_xl_int1_gen_source_get(&dev_ctx_xl, &int1_src_reg);
-    }
-    while (int1_src_reg.ia);
+    lsm303agr_int1_src_a_t int1_src_reg_a;
+    clearIntXL();
 
-    // MG SECTION
+// MG SECTION
     lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz);
     lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
@@ -1244,17 +1253,18 @@ static void multi_role_init(void)
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_CONTINUOUS_MODE); // LSM303AGR_SINGLE_TRIGGER
     lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
     lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
-    // setup mg interrupt
+// setup mg interrupt
     lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
     lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
-    //    int_ctrl_reg.iel = 1; // latch
+    int_ctrl_reg.iel = 1; // latch
     int_ctrl_reg.ien = 1; // enable int
     int_ctrl_reg.xien = 1; // axis enabled
     int_ctrl_reg.yien = 1; // axis enabled
     int_ctrl_reg.zien = 1; // axis enabled
     lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
+    clearIntMG();
 
-    //    uint32_t ct = Clock_getTicks();
+//    uint32_t ct = Clock_getTicks();
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
 
@@ -1297,11 +1307,7 @@ static void multi_role_init(void)
                                                APP_SUGGESTED_TX_TIME);
     }
 // Initialize GATT Client, used by GAPBondMgr to look for RPAO characteristic for network privacy
-#ifdef __GNUC__
-    GATT_InitClient("");
-#else
-  GATT_InitClient();
-#endif //__GNUC__
+    GATT_InitClient();
 
 // Register to receive incoming ATT Indications/Notifications
     GATT_RegisterForInd(selfEntity);
@@ -1372,6 +1378,12 @@ static void multi_role_init(void)
     Util_constructClock(&clkJuxtaLEDTimeout, multi_role_clockHandler,
     JUXTA_LED_TIMEOUT_PERIOD,
                         0, false, (UArg) &argJuxtaLEDTimeout);
+
+    // not sure why I need to clear, otherwise callback executed right away
+    GPIO_clearInt(INT_1_XL);
+    GPIO_clearInt(INT_MAG);
+    GPIO_enableInt(INT_1_XL);
+    GPIO_enableInt(INT_MAG);
     shutdownLEDs();
 }
 
@@ -1384,7 +1396,6 @@ static void multi_role_taskFxn(UArg a0, UArg a1)
     for (;;)
     {
         uint32_t events;
-
 // Waits for an event to be posted associated with the calling thread.
 // Note that an event associated with a thread is posted when a
 // message is queued to the message receive queue of the thread

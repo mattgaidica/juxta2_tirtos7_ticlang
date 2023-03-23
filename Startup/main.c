@@ -17,15 +17,15 @@
  are met:
 
  *  Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
+ notice, this list of conditions and the following disclaimer.
 
  *  Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
+ notice, this list of conditions and the following disclaimer in the
+ documentation and/or other materials provided with the distribution.
 
  *  Neither the name of Texas Instruments Incorporated nor the names of
-    its contributors may be used to endorse or promote products derived
-    from this software without specific prior written permission.
+ its contributors may be used to endorse or promote products derived
+ from this software without specific prior written permission.
 
  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
@@ -68,7 +68,6 @@
 #include "ble_user_config.h"
 
 #include "multi_role.h"
-
 
 // BLE user defined configuration
 #ifdef ICALL_JT
@@ -136,18 +135,18 @@ extern void AssertHandler(uint8 assertCause, uint8 assertSubcause);
  */
 int main()
 {
-  /* Register Application callback to trap asserts raised in the Stack */
-  halAssertCback = AssertHandler;
+    /* Register Application callback to trap asserts raised in the Stack */
+    halAssertCback = AssertHandler;
 
-  Board_initGeneral();
+    Board_initGeneral();
 
-  // Enable iCache prefetching
-  VIMSConfigure(VIMS_BASE, TRUE, TRUE);
-  // Enable cache
-  VIMSModeSet(VIMS_BASE, VIMS_MODE_ENABLED);
+    // Enable iCache prefetching
+    VIMSConfigure(VIMS_BASE, TRUE, TRUE);
+    // Enable cache
+    VIMSModeSet(VIMS_BASE, VIMS_MODE_ENABLED);
 
-  /* Register Application callback to trap asserts raised in the Stack */
-  RegisterAssertCback(AssertHandler);
+    /* Register Application callback to trap asserts raised in the Stack */
+    RegisterAssertCback(AssertHandler);
 
 #if !defined( POWER_SAVING ) || defined( USE_FPGA )
   /* Set constraints for Standby, powerdown and idle mode */
@@ -156,25 +155,24 @@ int main()
   Power_setConstraint(PowerCC26XX_IDLE_PD_DISALLOW);
 #endif // POWER_SAVING | USE_FPGA
 
-  /* Update User Configuration of the stack */
-  user0Cfg.appServiceInfo->timerTickPeriod = Clock_tickPeriod;
-  user0Cfg.appServiceInfo->timerMaxMillisecond  = ICall_getMaxMSecs();
+    /* Update User Configuration of the stack */
+    user0Cfg.appServiceInfo->timerTickPeriod = Clock_tickPeriod;
+    user0Cfg.appServiceInfo->timerMaxMillisecond = ICall_getMaxMSecs();
 
-  /* Initialize ICall module */
-  ICall_init();
+    /* Initialize ICall module */
+    ICall_init();
 
-  /* Start tasks of external images - Priority 5 */
-  ICall_createRemoteTasks();
+    /* Start tasks of external images - Priority 5 */
+    ICall_createRemoteTasks();
 
-  /* Kick off application - Priority 1 */
-  multi_role_createTask();
+    /* Kick off application - Priority 1 */
+    multi_role_createTask();
 
-  /* enable interrupts and start SYS/BIOS */
-  BIOS_start();
+    /* enable interrupts and start SYS/BIOS */
+    BIOS_start();
 
-  return 0;
+    return 0;
 }
-
 
 /*******************************************************************************
  * @fn          AssertHandler
@@ -214,7 +212,7 @@ int main()
  */
 void AssertHandler(uint8 assertCause, uint8 assertSubcause)
 {
-  // Open the display if the app has not already done so
+    // Open the display if the app has not already done so
 //  if ( !dispHandle )
 //  {
 //    dispHandle = Display_open(Display_Type_ANY, NULL);
@@ -222,55 +220,58 @@ void AssertHandler(uint8 assertCause, uint8 assertSubcause)
 
 //  Display_print0(dispHandle, 0, 0, ">>>STACK ASSERT");
 
-  // check the assert cause
-  switch (assertCause)
-  {
+// check the assert cause
+    switch (assertCause)
+    {
     case HAL_ASSERT_CAUSE_OUT_OF_MEMORY:
 //      Display_print0(dispHandle, 0, 0, "***ERROR***");
 //      Display_print0(dispHandle, 2, 0, ">> OUT OF MEMORY!");
-      break;
+        break;
 
     case HAL_ASSERT_CAUSE_INTERNAL_ERROR:
-      // check the subcause
-      if (assertSubcause == HAL_ASSERT_SUBCAUSE_FW_INERNAL_ERROR)
-      {
+        // check the subcause
+        if (assertSubcause == HAL_ASSERT_SUBCAUSE_FW_INERNAL_ERROR)
+        {
 //        Display_print0(dispHandle, 0, 0, "***ERROR***");
 //        Display_print0(dispHandle, 2, 0, ">> INTERNAL FW ERROR!");
-      }
-      else
-      {
+        }
+        else
+        {
 //        Display_print0(dispHandle, 0, 0, "***ERROR***");
 //        Display_print0(dispHandle, 2, 0, ">> INTERNAL ERROR!");
-      }
-      break;
+        }
+        break;
 
     case HAL_ASSERT_CAUSE_ICALL_ABORT:
 //      Display_print0(dispHandle, 0, 0, "***ERROR***");
 //      Display_print0(dispHandle, 2, 0, ">> ICALL ABORT!");
-      HAL_ASSERT_SPINLOCK;
-      break;
+        HAL_ASSERT_SPINLOCK
+        ;
+        break;
 
     case HAL_ASSERT_CAUSE_ICALL_TIMEOUT:
 //      Display_print0(dispHandle, 0, 0, "***ERROR***");
 //      Display_print0(dispHandle, 2, 0, ">> ICALL TIMEOUT!");
-      HAL_ASSERT_SPINLOCK;
-      break;
+        HAL_ASSERT_SPINLOCK
+        ;
+        break;
 
     case HAL_ASSERT_CAUSE_WRONG_API_CALL:
 //      Display_print0(dispHandle, 0, 0, "***ERROR***");
 //      Display_print0(dispHandle, 2, 0, ">> WRONG API CALL!");
-      HAL_ASSERT_SPINLOCK;
-      break;
+        HAL_ASSERT_SPINLOCK
+        ;
+        break;
 
-  default:
+    default:
 //      Display_print0(dispHandle, 0, 0, "***ERROR***");
 //      Display_print0(dispHandle, 2, 0, ">> DEFAULT SPINLOCK!");
-      HAL_ASSERT_SPINLOCK;
-  }
+        HAL_ASSERT_SPINLOCK
+        ;
+    }
 
-  return;
+    return;
 }
-
 
 /*******************************************************************************
  * @fn          smallErrorHook
@@ -289,9 +290,9 @@ void AssertHandler(uint8 assertCause, uint8 assertSubcause)
  */
 void smallErrorHook(Error_Block *eb)
 {
-  for (;;);
+    for (;;)
+        ;
 }
-
 
 /*******************************************************************************
  */

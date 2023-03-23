@@ -124,14 +124,18 @@ GPIO3.outputStrength  = "Low";
 GPIO3.mode            = "Output";
 GPIO3.gpioPin.$assign = "DIO_5";
 
-GPIO4.$name           = "INT_1_XL";
-GPIO4.gpioPin.$assign = "DIO_18";
+GPIO4.$name            = "INT_1_XL";
+GPIO4.callbackFunction = "intXL";
+GPIO4.interruptTrigger = "Falling Edge";
+GPIO4.gpioPin.$assign  = "DIO_18";
 
 GPIO5.$name           = "INT_2_XL";
 GPIO5.gpioPin.$assign = "DIO_19";
 
-GPIO6.$name           = "INT_MAG";
-GPIO6.gpioPin.$assign = "DIO_13";
+GPIO6.$name            = "INT_MAG";
+GPIO6.callbackFunction = "intMG";
+GPIO6.interruptTrigger = "Falling Edge";
+GPIO6.gpioPin.$assign  = "DIO_13";
 
 GPIO7.$name           = "CS_MAG";
 GPIO7.mode            = "Output";
