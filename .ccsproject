@@ -15,5 +15,5 @@
 	<templateProperties value="id=multi_role_LP_CC1352P7_4_tirtos7_ticlang.projectspec.multi_role_LP_CC1352P7_4_tirtos7_ticlang,buildProfile=release,isHybrid=true"/>
 	<origin value="/Applications/ti/simplelink_cc13xx_cc26xx_sdk_6_40_00_13/examples/rtos/LP_CC1352P7_4/ble5stack/multi_role/tirtos7/ticlang/multi_role_LP_CC1352P7_4_tirtos7_ticlang.projectspec"/>
 	<filesToOpen value=""/>
-	<isTargetManual value="false"/>
+	<isTargetManual value="true"/>
 </projectOptions>

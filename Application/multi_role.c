@@ -84,11 +84,11 @@ typedef enum
 
 // Timing
 #define JUXTA_LED_TIMEOUT_PERIOD        1 // ms
-#define TIME_SERVICE_UUID               0xEFFE // see iOS > BLEPeripheralApp
+#define TIME_SERVICE_UUID               0xEFFE // see iOS BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // us, Fs = 500kHz
 #define JUXTA_1HZ_PERIOD                1000 // ms
-#define JUXTA_SUBHZ_PERIOD              1000 * 60 * 3 // ms
+#define JUXTA_SUBHZ_PERIOD              1000 * 60 * 5 // ms
 #define JUXTA_STARTUP_TIMEOUT           100 // ms
 
 // Application events
@@ -637,7 +637,10 @@ static void doScan(juxtaScanModes_t scanMode)
     if (scanMode == JUXTA_SCAN_ONCE)
     {
         GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
-        iScan--;
+        if (juxtaMode != JUXTA_MODE_BASE)
+        {
+            iScan--;
+        }
     }
     else
     {
@@ -652,7 +655,10 @@ static void doAdvertise(juxtaAdvModes_t advMode)
         // setup same as scan, duration in 10ms ticks
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
                       DEFAULT_SCAN_DURATION);
-        iAdv--;
+        if (juxtaMode != JUXTA_MODE_BASE)
+        {
+            iAdv--;
+        }
     }
     else if (advMode == JUXTA_ADV_FOREVER)
     {
@@ -1100,47 +1106,6 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
 //        numScanRes = 0; do this in MR_EVT_SCAN_DISABLED
     }
 }
-
-//static void juxta1HzTask(void)
-//{
-//
-//    if (!isConnected)
-//    { // ie, skip when connected
-//        if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
-//        {
-//            setXL();
-//            uint8_t iEntry = 0;
-//            uint8_t uuid[ATT_BT_UUID_SIZE] =
-//                    { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
-//                            SIMPLEPROFILE_SERV_UUID) };
-//
-//            uint32_t tempAddr = metaAddr;
-//            uint32_t tempCount = metaCount;
-//            memcpy(metaEntry, uuid, sizeof(uuid));
-//            iEntry += sizeof(uuid); // int16
-//            memcpy(metaEntry + iEntry, &data_raw_temperature,
-//                   sizeof(data_raw_temperature));
-//            iEntry += sizeof(data_raw_temperature); // int16
-//            memcpy(metaEntry + iEntry, &data_raw_voltage,
-//                   sizeof(data_raw_voltage));
-//            iEntry += sizeof(data_raw_voltage); // int16[3]
-//            memcpy(metaEntry + iEntry, data_raw_acceleration,
-//                   sizeof(data_raw_acceleration));
-//            iEntry += sizeof(data_raw_acceleration);
-//            memcpy(metaEntry + iEntry, data_raw_magnetic,
-//                   sizeof(data_raw_magnetic));
-//            iEntry += sizeof(data_raw_magnetic); // int16[3]
-//            memcpy(metaEntry + iEntry, &timeRef, sizeof(timeRef)); // uint32
-//            ReturnType ret = NAND_Write(&metaAddr, metaBuffer, metaEntry,
-//            JUXTA_META_ENTRY_SIZE);
-//            metaCount++;
-//            simpleProfile_SetParameter(JUXTAPROFILE_METACOUNT,
-//            JUXTAPROFILE_METACOUNT_LEN,
-//                                       &metaCount);
-//            setMetaRecovery(tempAddr, tempCount, ret); // if a page was written, commit these
-//        }
-//    }
-//}
 
 // *** TI CODE ***
 static void multi_role_spin(void)
@@ -1997,15 +1962,25 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_DISABLED:
     {
-        if (iScan > 0)
+        if (juxtaMode == JUXTA_MODE_BASE)
         {
+            logScan();
+            numScanRes = 0;
             doScan(JUXTA_SCAN_ONCE); // repeat
         }
         else
         {
-            logScan();
-            numScanRes = 0;
+            if (iScan == 0)
+            {
+                logScan();
+                numScanRes = 0;
+            }
+            else
+            {
+                doScan(JUXTA_SCAN_ONCE); // repeat
+            }
         }
+
         break;
     }
 
@@ -2151,6 +2126,13 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         else
         {
             GPIO_disableInt(INT_1_XL);
+        }
+        if (juxtaMode == JUXTA_MODE_BASE) // ignore iAdv--,iScan-- at callback
+        {
+            iScan = 1;
+            iAdv = 1;
+            doAdvertise(JUXTA_ADV_ONCE);
+            doScan(JUXTA_SCAN_ONCE);
         }
         clearIntMG();
         GPIO_enableInt(INT_MAG);
