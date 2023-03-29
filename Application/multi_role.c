@@ -86,7 +86,7 @@ typedef enum
 #define JUXTA_LED_TIMEOUT_PERIOD        1 // ms
 #define TIME_SERVICE_UUID               0xEFFE // see iOS BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
-#define SPI_HALF_PERIOD                 1 // us, Fs = 500kHz
+#define SPI_HALF_PERIOD                 1 // 1us, Fs = 500kHz
 #define JUXTA_1HZ_PERIOD                1000 // ms
 #define JUXTA_SUBHZ_PERIOD              1000 * 60 * 5 // ms
 #define JUXTA_STARTUP_TIMEOUT           100 // ms
@@ -487,6 +487,7 @@ static void timeoutLED(uint8_t index);
 static void blinkLED(uint8_t runOnce);
 static void loadConfigs(void);
 static void saveConfigs(void);
+static void logScan(void);
 static void logMetaData(uint8_t dataType, float data, uint32_t lastTime);
 static uint32_t calcActualTime(void);
 static void doScan(juxtaScanModes_t scanMode);
@@ -1072,8 +1073,7 @@ static void loadConfigs(void)
 static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addScanInfo()
 {
 // see: scanList, numScanRes
-    uint32_t offset, i;
-    uint8_t iEntry = 0;
+    uint8_t i;
     uint32_t actualTime = calcActualTime();
     if (numScanRes > 0)
     {
@@ -1081,6 +1081,7 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
         {
             uint32_t tempAddr = logAddr;
             uint32_t tempCount = logCount;
+            uint8_t iEntry = 0;
             // load buffer
             uint8_t uuid[ATT_BT_UUID_SIZE] =
                     { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
@@ -1173,13 +1174,7 @@ static void multi_role_init(void)
         lsm303agr_xl_device_id_get(&dev_ctx_xl, &whoamI);
     }
     while (whoamI != LSM303AGR_ID_XL);
-    lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
-    whoamI = 0;
-    do
-    {
-        lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
-    }
-    while (whoamI != LSM303AGR_ID_MG);
+
     /* Restore default configuration for magnetometer */
     lsm303agr_mag_reset_set(&dev_ctx_mg, PROPERTY_ENABLE);
     do
@@ -1187,6 +1182,13 @@ static void multi_role_init(void)
         lsm303agr_mag_reset_get(&dev_ctx_mg, &rst);
     }
     while (rst);
+    lsm303agr_mag_i2c_interface_set(&dev_ctx_mg, LSM303AGR_I2C_DISABLE);
+    whoamI = 0;
+    do
+    {
+        lsm303agr_mag_device_id_get(&dev_ctx_mg, &whoamI);
+    }
+    while (whoamI != LSM303AGR_ID_MG);
 
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
     lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // LSM303AGR_XL_POWER_DOWN
@@ -1359,9 +1361,8 @@ static void multi_role_init(void)
     JUXTA_STARTUP_TIMEOUT,
                         JUXTA_STARTUP_TIMEOUT, true, (UArg) &argJuxtaStartup);
     // one-shot, add period later
-    Util_constructClock(&clkJuxtaIntervalMode, multi_role_clockHandler, 0,
-                        juxtaModuloInterval * 1000,
-                        false,
+    Util_constructClock(&clkJuxtaIntervalMode, multi_role_clockHandler, 0, 0,
+    false,
                         (UArg) &argJuxtaIntervalMode);
     // one-shot to yoke XL logging sampling rate
     Util_constructClock(&clkJuxtaXLIntTimeout, multi_role_clockHandler,
@@ -1980,7 +1981,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
                 doScan(JUXTA_SCAN_ONCE); // repeat
             }
         }
-
         break;
     }
 
@@ -2116,7 +2116,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             // next time actualTime % juxtaModuloInterval == 0
             uint32_t intervalTimeout = (juxtaModuloInterval
                     - actualTime % juxtaModuloInterval) % juxtaModuloInterval;
-            Util_restartClock(&clkJuxtaIntervalMode, intervalTimeout * 1000);
+            // this clock delays for the right modulo and sets period based on user settings
+            Util_rescheduleClock(&clkJuxtaIntervalMode, intervalTimeout * 1000, juxtaModuloInterval * 1000);
         }
         if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
         {
