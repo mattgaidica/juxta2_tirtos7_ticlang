@@ -53,6 +53,7 @@
 /*********************************************************************
  * CONSTANTS
  */
+static const uint8_t JUXTA_VERSION = 0b00100001; // 0b7654 = X.-, 0x3210 = -.X
 #define INT_THRESHOLD_MG    5000
 #define INT_THRESHOLD_XL    0x04
 #define INT_DURATION_XL     0
@@ -1316,9 +1317,10 @@ static void multi_role_init(void)
         simpleProfile_SetParameter(JUXTAPROFILE_TEMP,
         JUXTAPROFILE_TEMP_LEN,
                                    &temperature_degC);
-//        simpleProfile_SetParameter(JUXTAPROFILE_ADVMODE,
-//        JUXTAPROFILE_ADVMODE_LEN,
-//                                   &juxtaMode);
+        // JUXTAPROFILE_ADVMODE is filled with juxtaOptions in getJuxtaOptions()
+        simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
+            JUXTAPROFILE_COMMAND_LEN,
+                                       &JUXTA_VERSION);
         simpleProfile_SetParameter(JUXTAPROFILE_DATA,
         JUXTAPROFILE_DATA_LEN,
                                    dataBuffer);
