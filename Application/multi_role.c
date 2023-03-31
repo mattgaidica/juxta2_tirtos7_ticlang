@@ -1319,8 +1319,8 @@ static void multi_role_init(void)
                                    &temperature_degC);
         // JUXTAPROFILE_ADVMODE is filled with juxtaOptions in getJuxtaOptions()
         simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
-            JUXTAPROFILE_COMMAND_LEN,
-                                       &JUXTA_VERSION);
+        JUXTAPROFILE_COMMAND_LEN,
+                                   &JUXTA_VERSION);
         simpleProfile_SetParameter(JUXTAPROFILE_DATA,
         JUXTAPROFILE_DATA_LEN,
                                    dataBuffer);
@@ -2045,6 +2045,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         subHzCount++;
         uint32_t actualTime = calcActualTime();
+        setVoltage();
+        setTemp();
         logMetaData(JUXTA_DATATYPE_TEMP, temperature_degC, actualTime);
         logMetaData(JUXTA_DATATYPE_VBATT, vbatt, actualTime);
         if (dumpResetFlag == 0 || isConnected)
@@ -2109,6 +2111,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     case JUXTA_EVT_DISCONNECTED:
     {
         isConnected = false;
+        // reset version so it displays at startup
+        simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
+        JUXTAPROFILE_COMMAND_LEN,
+                                   &JUXTA_VERSION);
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_MG_INT
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_MG_INT
         Util_stopClock(&clkJuxta1Hz);
@@ -2119,7 +2125,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             uint32_t intervalTimeout = (juxtaModuloInterval
                     - actualTime % juxtaModuloInterval) % juxtaModuloInterval;
             // this clock delays for the right modulo and sets period based on user settings
-            Util_rescheduleClock(&clkJuxtaIntervalMode, intervalTimeout * 1000, juxtaModuloInterval * 1000);
+            Util_rescheduleClock(&clkJuxtaIntervalMode, intervalTimeout * 1000,
+                                 juxtaModuloInterval * 1000);
         }
         if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
         {
