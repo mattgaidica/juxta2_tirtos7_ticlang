@@ -53,8 +53,8 @@
 /*********************************************************************
  * CONSTANTS
  */
-static const uint8_t JUXTA_VERSION = 0b00100001; // 0b7654 = X.-, 0x3210 = -.X
-#define INT_THRESHOLD_MG    5000
+static const uint8_t JUXTA_VERSION = 0b00100010; // 0b7654 = X.-, 0x3210 = -.X
+#define INT_THRESHOLD_MG    3000
 #define INT_THRESHOLD_XL    0x04
 #define INT_DURATION_XL     0
 
