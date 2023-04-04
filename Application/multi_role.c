@@ -53,7 +53,8 @@
 /*********************************************************************
  * CONSTANTS
  */
-static const uint8_t JUXTA_VERSION = 0b00100010; // 0b7654 = X.-, 0x3210 = -.X
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN+1] = "2.2.0";
+//static const uint8_t JUXTA_VERSION = 0b00100010; // 0b7654 = X.-, 0x3210 = -.X
 #define INT_THRESHOLD_MG    3000
 #define INT_THRESHOLD_XL    0x04
 #define INT_DURATION_XL     0
@@ -1318,9 +1319,9 @@ static void multi_role_init(void)
         JUXTAPROFILE_TEMP_LEN,
                                    &temperature_degC);
         // JUXTAPROFILE_ADVMODE is filled with juxtaOptions in getJuxtaOptions()
-        simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
-        JUXTAPROFILE_COMMAND_LEN,
-                                   &JUXTA_VERSION);
+//        simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
+//        JUXTAPROFILE_COMMAND_LEN,
+//                                   &JUXTA_VERSION);
         simpleProfile_SetParameter(JUXTAPROFILE_DATA,
         JUXTAPROFILE_DATA_LEN,
                                    dataBuffer);
@@ -1536,6 +1537,9 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
 // Set Device Info Service Parameter
             DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN,
                                  systemId);
+            DevInfo_SetParameter(DEVINFO_SOFTWARE_REV, DEVINFO_STR_ATTR_LEN,
+            JUXTA_VERSION);
+            // could utilize DEVINFO_SOFTWARE_REV here
 
             BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- start advert %d,%d\n", 0, 0);
 //Setup and start advertising
@@ -2112,9 +2116,9 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         isConnected = false;
         // reset version so it displays at startup
-        simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
-        JUXTAPROFILE_COMMAND_LEN,
-                                   &JUXTA_VERSION);
+//        simpleProfile_SetParameter(JUXTAPROFILE_COMMAND,
+//        JUXTAPROFILE_COMMAND_LEN,
+//                                   &JUXTA_VERSION);
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_MG_INT
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_MG_INT
         Util_stopClock(&clkJuxta1Hz);
