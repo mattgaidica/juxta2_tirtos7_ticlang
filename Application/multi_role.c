@@ -53,9 +53,9 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN+1] = "2.2.0";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "2.2.0";
 //static const uint8_t JUXTA_VERSION = 0b00100010; // 0b7654 = X.-, 0x3210 = -.X
-#define INT_THRESHOLD_MG    3000
+#define INT_THRESHOLD_MG    5000
 #define INT_THRESHOLD_XL    0x04
 #define INT_DURATION_XL     0
 
@@ -931,7 +931,8 @@ static void timeoutLED(uint8_t index)
     if (index == LED1 || index == LED2)
     {
         GPIO_write(index, 1);
-        Util_startClock(&clkJuxtaLEDTimeout);
+        // restart ensures the clock is not started twice (avoid memory issues)
+        Util_restartClock(&clkJuxtaLEDTimeout, JUXTA_LED_TIMEOUT_PERIOD);
     }
 }
 
@@ -1538,7 +1539,7 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
             DevInfo_SetParameter(DEVINFO_SYSTEM_ID, DEVINFO_SYSTEM_ID_LEN,
                                  systemId);
             DevInfo_SetParameter(DEVINFO_SOFTWARE_REV, DEVINFO_STR_ATTR_LEN,
-            JUXTA_VERSION);
+                                 JUXTA_VERSION);
             // could utilize DEVINFO_SOFTWARE_REV here
 
             BLE_LOG_INT_INT(0, BLE_LOG_MODULE_APP, "APP : ---- start advert %d,%d\n", 0, 0);
@@ -2157,7 +2158,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         lastXLIntTime = calcActualTime();
         // should not be entering twice, but just use restartClock()
-        Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout);
+        Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
         break;
     }
 
@@ -2172,7 +2173,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         timeoutLED(LED2);
         lastMGIntTime = calcActualTime();
-        Util_restartClock(&clkJuxtaMGIntTimeout, juxtaIntTimeout);
+        Util_restartClock(&clkJuxtaMGIntTimeout, juxtaIntTimeout); // controls logging
         if (!isConnected)
         {
             if (scanWithMagnet)
@@ -2188,7 +2189,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_MG_INT_TIMEOUT:
     {
-        logMetaData(JUXTA_DATATYPE_MG, 0, lastMGIntTime);
+        if (scanWithMagnet)
+        {
+            logMetaData(JUXTA_DATATYPE_MG, 0, lastMGIntTime);
+        }
         // no clear is done by advertise (always occurs with magnet)
         break;
     }
