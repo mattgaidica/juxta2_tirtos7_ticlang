@@ -94,10 +94,10 @@ ble.advSet1.scanRes1.maxConnInterval                      = 7.5;
 ble.connUpdateParamsCentral.$name                         = "ti_ble5stack_general_ble_conn_update_params1";
 
 CCFG.xoscCapArrayDelta       = 0xC1;
-CCFG.enableBootloader        = true;
 CCFG.dioBootloaderBackdoor   = 15;
 CCFG.levelBootloaderBackdoor = "Active low";
 CCFG.srcClkLF                = "LF RCOSC";
+CCFG.enableDCDC              = false;
 CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 
 rfdesign.fbSub1g = "none";
@@ -125,13 +125,15 @@ GPIO3.outputStrength  = "Low";
 GPIO3.mode            = "Output";
 GPIO3.gpioPin.$assign = "DIO_5";
 
-GPIO4.$name            = "INT_1_XL";
-GPIO4.callbackFunction = "intXL";
 GPIO4.interruptTrigger = "Falling Edge";
+GPIO4.callbackFunction = "intXL1";
+GPIO4.$name            = "INT_XL_1";
 GPIO4.gpioPin.$assign  = "DIO_18";
 
-GPIO5.$name           = "INT_2_XL";
-GPIO5.gpioPin.$assign = "DIO_19";
+GPIO5.callbackFunction = "intXL2";
+GPIO5.interruptTrigger = "Falling Edge";
+GPIO5.$name            = "INT_XL_2";
+GPIO5.gpioPin.$assign  = "DIO_19";
 
 GPIO6.$name            = "INT_MAG";
 GPIO6.callbackFunction = "intMG";
