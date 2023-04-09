@@ -97,7 +97,7 @@ CCFG.xoscCapArrayDelta       = 0xC1;
 CCFG.dioBootloaderBackdoor   = 15;
 CCFG.levelBootloaderBackdoor = "Active low";
 CCFG.srcClkLF                = "LF RCOSC";
-CCFG.enableDCDC              = false;
+CCFG.enableBootloader        = true;
 CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 
 rfdesign.fbSub1g = "none";
