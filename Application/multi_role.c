@@ -53,12 +53,12 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230408";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "2.2.230407";
 #define INT_THRESHOLD_MG    1000
-#define INT_THRESHOLD_XL1   0x06
+#define INT_THRESHOLD_XL1   0x04
 #define INT_DURATION_XL     0
 #define INT_DURATION_6D     1 // N/ODR
-#define INT_THRESHOLD_XL2   0x04 // use 0x21 less unsensitive
+#define INT_THRESHOLD_XL2   0x04 // works from 2-9? do not understand it
 
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
@@ -606,9 +606,6 @@ static void setJuxtaOptions(uint8_t juxtaOptions)
 // could test status, but not sure what to do with it
 static void logMetaData(uint8_t dataType, float data, uint32_t lastTime)
 {
-    if (!has_NAND)
-        return;
-
     uint8_t iEntry = 0;
     uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(SIMPLEPROFILE_SERV_UUID),
                                        HI_UINT16(SIMPLEPROFILE_SERV_UUID) };
@@ -965,9 +962,6 @@ static void shutdownLEDs(void)
 static ReturnType dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
 {
     ReturnType ret = Flash_ProgramFailed;
-    if (!has_NAND)
-        return ret;
-
     if (dumpAddr < *addr)
     {
 // at start: write the existing buffer to NAND, fill remaining page with 0xFF
@@ -1099,9 +1093,6 @@ static void loadConfigs(void)
 static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addScanInfo()
 {
 // see: scanList, numScanRes
-    if (!has_NAND)
-        return;
-
     uint8_t i;
     uint32_t actualTime = calcActualTime();
     if (numScanRes > 0)
@@ -2120,7 +2111,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             logMetaData(JUXTA_DATATYPE_VBATT, vbatt, actualTime);
         }
 
-        if (forceSave && has_NAND)
+        if (forceSave)
         {
             uint32_t restoreLogAddr = logAddr;
             uint32_t restoreMetaAddr = metaAddr;
@@ -2214,7 +2205,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             doAdvertise(JUXTA_ADV_ONCE);
             doScan(JUXTA_SCAN_ONCE);
         }
-        // init
         clearIntXL2();
         GPIO_enableInt(INT_XL_2);
         break;
@@ -2237,11 +2227,12 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_XL2:
     {
-        if (!isConnected && iAdv == 0) // ensures interval mode is not active
+//        timeoutLED(LED2);
+        GPIO_write(LED2, 1);
+        if (!isConnected)
         {
-            timeoutLED(LED2);
-            iAdv = 1;
-            doAdvertise(JUXTA_ADV_ONCE); // clears interrupt after adv
+            iAdv = 1; // !! prob want more if this is an animal/station
+            doAdvertise(JUXTA_ADV_ONCE); // clearIntMG() here
         }
         break;
     }
