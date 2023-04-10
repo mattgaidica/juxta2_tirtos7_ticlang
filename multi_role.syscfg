@@ -33,6 +33,9 @@ const GPIO8        = GPIO.addInstance();
 const GPIO9        = GPIO.addInstance();
 const GPIO10       = GPIO.addInstance();
 const GPIO11       = GPIO.addInstance();
+const GPIO12       = GPIO.addInstance();
+const GPIO13       = GPIO.addInstance();
+const GPIO17       = GPIO.addInstance();
 const NVS          = scripting.addModule("/ti/drivers/NVS");
 const NVS1         = NVS.addInstance();
 const NVS2         = NVS.addInstance();
@@ -97,14 +100,14 @@ CCFG.xoscCapArrayDelta       = 0xC1;
 CCFG.dioBootloaderBackdoor   = 15;
 CCFG.levelBootloaderBackdoor = "Active low";
 CCFG.srcClkLF                = "LF RCOSC";
-CCFG.enableBootloader        = true;
 CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 
 rfdesign.fbSub1g = "none";
 rfdesign.pa20    = "none";
 rfdesign.fe24g   = "ID";
 
-ADC1.$name = "CONFIG_ADC_VBATT";
+ADC1.$name              = "CONFIG_ADC_VBATT";
+ADC1.adc.adcPin.$assign = "DIO_23";
 
 AESCCM1.$name = "CONFIG_AESCCM0";
 
@@ -116,8 +119,8 @@ AESECB1.$name = "CONFIG_AESECB0";
 ECDH1.$name = "CONFIG_ECDH0";
 
 GPIO2.$name           = "LED1";
-GPIO2.mode            = "Output";
 GPIO2.outputStrength  = "Low";
+GPIO2.mode            = "Output";
 GPIO2.gpioPin.$assign = "DIO_22";
 
 GPIO3.$name           = "LED2";
@@ -141,8 +144,8 @@ GPIO6.interruptTrigger = "Falling Edge";
 GPIO6.gpioPin.$assign  = "DIO_13";
 
 GPIO7.$name           = "CS_MAG";
-GPIO7.mode            = "Output";
 GPIO7.outputStrength  = "Low";
+GPIO7.mode            = "Output";
 GPIO7.gpioPin.$assign = "DIO_14";
 
 GPIO8.$name           = "CS_XL";
@@ -162,6 +165,16 @@ GPIO11.$name              = "NAND_CS";
 GPIO11.mode               = "Output";
 GPIO11.initialOutputState = "High";
 GPIO11.outputStrength     = "Low";
+GPIO11.gpioPin.$assign    = "DIO_7";
+
+GPIO12.$name           = "RX";
+GPIO12.gpioPin.$assign = "DIO_12";
+
+GPIO13.$name           = "TX";
+GPIO13.gpioPin.$assign = "DIO_11";
+
+GPIO17.$name           = "DEBUG";
+GPIO17.gpioPin.$assign = "DIO_10";
 
 NVS1.$name                    = "CONFIG_NVSINTERNAL";
 NVS1.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX0";
@@ -231,8 +244,6 @@ System.supportModule   = "SysCallback";
  * re-solve from scratch.
  */
 ADC1.adc.$suggestSolution              = "ADC0";
-ADC1.adc.adcPin.$suggestSolution       = "DIO_23";
-GPIO11.gpioPin.$suggestSolution        = "DIO_7";
 SPI1.spi.$suggestSolution              = "SSI0";
 SPI1.spi.dmaRxChannel.$suggestSolution = "DMA_CH3";
 SPI1.spi.dmaTxChannel.$suggestSolution = "DMA_CH4";

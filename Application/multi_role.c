@@ -15,7 +15,6 @@
  * INCLUDES
  */
 #include <unistd.h>
-#include <ti/drivers/ADC.h>
 #include <ti/sysbios/knl/Clock.h>
 #include <ti/sysbios/knl/Event.h>
 #include <ti/sysbios/knl/Queue.h>
@@ -25,6 +24,7 @@
 #include <intrinsics.h>
 #endif
 
+#include <ti/drivers/ADC.h>
 #include <ti/drivers/GPIO.h>
 #include <ti/drivers/NVS.h>
 #include <ti/drivers/SPI.h>
@@ -1236,7 +1236,7 @@ static void multi_role_init(void)
     lsm303agr_xl_block_data_update_set(&dev_ctx_xl, PROPERTY_ENABLE);
     lsm303agr_xl_data_rate_set(&dev_ctx_xl, LSM303AGR_XL_ODR_10Hz); // LSM303AGR_XL_POWER_DOWN
     lsm303agr_xl_full_scale_set(&dev_ctx_xl, LSM303AGR_2g);
-    lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE);
+    lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE); // LSM303AGR_TEMP_ENABLE
     lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
 
 // INT1 config see AN4825 pg.37
@@ -2188,7 +2188,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         Util_stopClock(&clkJuxta1Hz);
-        if (juxtaMode == JUXTA_MODE_INTERVAL)
+        if (juxtaMode == JUXTA_MODE_INTERVAL || JUXTA_MODE_BASE)
         {
             uint32_t actualTime = calcActualTime();
             // next time actualTime % juxtaModuloInterval == 0
@@ -2198,6 +2198,15 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             Util_rescheduleClock(&clkJuxtaIntervalMode, intervalTimeout * 1000,
                                  juxtaModuloInterval * 1000);
         }
+        if (juxtaMode == JUXTA_MODE_BASE)
+        {
+            HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_5_DBM);
+        }
+        else
+        {
+            // could also use extended advertising set
+            HCI_EXT_SetTxPowerCmd(DEFAULT_TX_POWER);
+        }
         if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
         {
             clearIntXL1();
@@ -2206,13 +2215,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         else
         {
             GPIO_disableInt(INT_XL_1);
-        }
-        if (juxtaMode == JUXTA_MODE_BASE) // ignore iAdv--,iScan-- at callback
-        {
-            iScan = 1;
-            iAdv = 1;
-            doAdvertise(JUXTA_ADV_ONCE);
-            doScan(JUXTA_SCAN_ONCE);
         }
         // init
         clearIntXL2();
