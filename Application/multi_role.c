@@ -1161,13 +1161,10 @@ void multi_role_createTask(void)
 
 static void multi_role_init(void)
 {
-//    GPIO_init();
     GPIO_write(LED1, 1);
     GPIO_write(LED2, 1);
-    SPI_init();
-    NVS_init();
-    ADC_init();
 
+    ADC_init();
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
     setVoltage();
@@ -1194,12 +1191,14 @@ static void multi_role_init(void)
     memset(attDeviceName + 3, 0, sizeof(attDeviceName) - 3);
     memcpy(attDeviceName + 3, pStrAddr, 12); // include JX_
 
+    NVS_init();
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
-// note: this has to be in 3-wire so CS is manually controlled
+// note: this has to be in 3-wire mode so CS is manually controlled
+    SPI_init();
     SPI_Params_init(&spiParams);
     SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
     has_NAND = NAND_Init();
-    loadConfigs();
+    loadConfigs(); // comes after NAND to fill recovery buffer
 
     dev_ctx_xl.write_reg = platform_write;
     dev_ctx_xl.read_reg = platform_read;
@@ -1288,17 +1287,17 @@ static void multi_role_init(void)
                                    LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
     // LSM303AGR_POWER_DOWN, LSM303AGR_SINGLE_TRIGGER, LSM303AGR_CONTINUOUS_MODE
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
-    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
-    lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
-// setup mg interrupt
-    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
-    lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
-    int_ctrl_reg.iel = 1; // latch
-    int_ctrl_reg.ien = 1; // enable int
-    int_ctrl_reg.xien = 1; // axis enabled
-    int_ctrl_reg.yien = 1; // axis enabled
-    int_ctrl_reg.zien = 1; // axis enabled
-    lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
+//    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+//    lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+//// setup mg interrupt
+//    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
+//    lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
+//    int_ctrl_reg.iel = 1; // latch
+//    int_ctrl_reg.ien = 1; // enable int
+//    int_ctrl_reg.xien = 1; // axis enabled
+//    int_ctrl_reg.yien = 1; // axis enabled
+//    int_ctrl_reg.zien = 1; // axis enabled
+//    lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
 
     BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- init ", MR_TASK_PRIORITY);
 // ******************************************************************
@@ -2188,7 +2187,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         Util_stopClock(&clkJuxta1Hz);
-        if (juxtaMode == JUXTA_MODE_INTERVAL || JUXTA_MODE_BASE)
+        if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_BASE)
         {
             uint32_t actualTime = calcActualTime();
             // next time actualTime % juxtaModuloInterval == 0
@@ -2200,11 +2199,11 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         }
         if (juxtaMode == JUXTA_MODE_BASE)
         {
+            // could also use extended advertising set
             HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_5_DBM);
         }
         else
         {
-            // could also use extended advertising set
             HCI_EXT_SetTxPowerCmd(DEFAULT_TX_POWER);
         }
         if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
@@ -2241,9 +2240,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         if (!isConnected && iAdv == 0) // ensures interval mode is not active
         {
+            // if interval is active, adv should still clear XL2
             timeoutLED(LED2);
             iAdv = 1;
-            doAdvertise(JUXTA_ADV_ONCE); // clears interrupt after adv
+            doAdvertise(JUXTA_ADV_ONCE);
         }
         break;
     }

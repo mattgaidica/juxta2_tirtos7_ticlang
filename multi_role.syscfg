@@ -116,6 +116,8 @@ AESCTRDRBG1.aesctrObject.$name = "CONFIG_AESCTR_0";
 
 AESECB1.$name = "CONFIG_AESECB0";
 
+Board.generateInitializationFunctions = false;
+
 ECDH1.$name = "CONFIG_ECDH0";
 
 GPIO2.$name           = "LED1";
