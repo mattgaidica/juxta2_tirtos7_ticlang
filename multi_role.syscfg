@@ -35,7 +35,7 @@ const GPIO10       = GPIO.addInstance();
 const GPIO11       = GPIO.addInstance();
 const GPIO12       = GPIO.addInstance();
 const GPIO13       = GPIO.addInstance();
-const GPIO17       = GPIO.addInstance();
+const GPIO14       = GPIO.addInstance();
 const NVS          = scripting.addModule("/ti/drivers/NVS");
 const NVS1         = NVS.addInstance();
 const NVS2         = NVS.addInstance();
@@ -121,8 +121,8 @@ Board.generateInitializationFunctions = false;
 ECDH1.$name = "CONFIG_ECDH0";
 
 GPIO2.$name           = "LED1";
-GPIO2.outputStrength  = "Low";
 GPIO2.mode            = "Output";
+GPIO2.outputStrength  = "Low";
 GPIO2.gpioPin.$assign = "DIO_22";
 
 GPIO3.$name           = "LED2";
@@ -175,8 +175,8 @@ GPIO12.gpioPin.$assign = "DIO_12";
 GPIO13.$name           = "TX";
 GPIO13.gpioPin.$assign = "DIO_11";
 
-GPIO17.$name           = "DEBUG";
-GPIO17.gpioPin.$assign = "DIO_10";
+GPIO14.$name           = "DEBUG";
+GPIO14.gpioPin.$assign = "DIO_10";
 
 NVS1.$name                    = "CONFIG_NVSINTERNAL";
 NVS1.internalFlash.$name      = "ti_drivers_nvs_NVSCC26XX0";

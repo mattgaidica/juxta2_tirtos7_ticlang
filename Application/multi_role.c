@@ -644,10 +644,7 @@ static void doScan(juxtaScanModes_t scanMode)
     if (scanMode == JUXTA_SCAN_ONCE)
     {
         GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
-        if (juxtaMode != JUXTA_MODE_BASE)
-        {
-            iScan--;
-        }
+        iScan--;
     }
     else
     {
@@ -662,10 +659,7 @@ static void doAdvertise(juxtaAdvModes_t advMode)
         // setup same as scan, duration in 10ms ticks
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
                       DEFAULT_SCAN_DURATION);
-        if (juxtaMode != JUXTA_MODE_BASE)
-        {
-            iAdv--;
-        }
+        iAdv--;
     }
     else if (advMode == JUXTA_ADV_FOREVER)
     {
