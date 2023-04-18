@@ -58,7 +58,7 @@ static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230408";
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
 #define INT_DURATION_6D     1 // N/ODR
-#define INT_THRESHOLD_XL2   0x04 // use 0x21 less unsensitive
+#define INT_THRESHOLD_XL2   0x05 // use 0x21 less unsensitive
 
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
@@ -87,7 +87,7 @@ typedef enum
 } juxtaConfigOffsets_t;
 
 // Timing
-#define JUXTA_LED_TIMEOUT_PERIOD        1 // ms
+#define JUXTA_LED_TIMEOUT_PERIOD        5 // ms
 #define TIME_SERVICE_UUID               0xEFFE // see iOS BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // 1us, Fs = 500kHz
@@ -359,7 +359,7 @@ static uint32_t subHzCount = 0;
 static uint8_t advScanIterations;
 static uint32_t advScanIterations_table[4] = { 1, 2, 5, 10 };
 static uint32_t juxtaModuloInterval;
-static uint32_t juxtaModuloInterval_table[4] = { 20, 30, 60, 3600 };
+static uint32_t juxtaModuloInterval_table[4] = { 30, 60, 360, 3600 };
 static bool scanWithMagnet = false;
 static uint32_t juxtaIntTimeout = 1000 * 60; // default should never used though
 static uint32_t juxtaIntTimeout_table[2] = { 1000 * 60, 1000 * 10 };
@@ -639,6 +639,16 @@ static uint32_t calcActualTime(void)
     return actualTime;
 }
 
+static int32 getSleepUs(void)
+{
+    int32_t sleepUs = 1e6 - (DEFAULT_SCAN_WINDOW * 625); // window is when scan is on
+//    int32_t sleepUs = 1e6 - (DEFAULT_SCAN_DURATION * 10 * 1e3);
+    if (sleepUs > 0) {
+        return sleepUs;
+    }
+    return 0;
+}
+
 static void doScan(juxtaScanModes_t scanMode)
 {
     if (scanMode == JUXTA_SCAN_ONCE)
@@ -656,7 +666,8 @@ static void doAdvertise(juxtaAdvModes_t advMode)
 {
     if (advMode == JUXTA_ADV_ONCE)
     {
-        // setup same as scan, duration in 10ms ticks
+        // setup same as scan
+//        usleep(getSleepUs()); // use 1s period
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
                       DEFAULT_SCAN_DURATION);
         iAdv--;
@@ -797,7 +808,6 @@ static void clearIntXL2(void)
         lsm303agr_xl_int2_gen_source_get(&dev_ctx_xl, &int2_src_reg_a);
     }
     while (!GPIO_read(INT_XL_2));
-    GPIO_write(LED2, 0);
 }
 
 static void setTemp(void)
@@ -2010,14 +2020,14 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_DISABLED:
     {
-        if (juxtaMode == JUXTA_MODE_BASE)
-        {
-            logScan();
-            numScanRes = 0;
-            doScan(JUXTA_SCAN_ONCE); // repeat
-        }
-        else
-        {
+//        if (juxtaMode == JUXTA_MODE_BASE)
+//        {
+//            logScan();
+//            numScanRes = 0;
+//            doScan(JUXTA_SCAN_ONCE); // repeat
+//        }
+//        else
+//        {
             if (iScan == 0)
             {
                 logScan();
@@ -2027,7 +2037,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             {
                 doScan(JUXTA_SCAN_ONCE); // repeat
             }
-        }
+//        }
         break;
     }
 
@@ -2235,7 +2245,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         if (!isConnected && iAdv == 0) // ensures interval mode is not active
         {
             // if interval is active, adv should still clear XL2
-            timeoutLED(LED2);
+            timeoutLED(LED1);
             iAdv = 1;
             doAdvertise(JUXTA_ADV_ONCE);
         }
@@ -2244,7 +2254,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_MG:
     {
-        timeoutLED(LED2);
+        timeoutLED(LED1);
         lastMGIntTime = calcActualTime();
         Util_restartClock(&clkJuxtaMGIntTimeout, juxtaIntTimeout); // controls logging
         if (!isConnected)
