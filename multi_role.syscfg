@@ -124,12 +124,11 @@ ECDH1.$name = "CONFIG_ECDH0";
 
 GPIO2.$name           = "LED1";
 GPIO2.mode            = "Output";
-GPIO2.outputStrength  = "Low";
+GPIO2.outputStrength  = "High";
 GPIO2.gpioPin.$assign = "DIO_22";
 
 GPIO3.$name           = "LED2";
 GPIO3.outputStrength  = "Low";
-GPIO3.mode            = "Output";
 GPIO3.gpioPin.$assign = "DIO_5";
 
 GPIO4.interruptTrigger = "Falling Edge";

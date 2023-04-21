@@ -53,12 +53,12 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230408";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230421";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
 #define INT_DURATION_6D     1 // N/ODR
-#define INT_THRESHOLD_XL2   0x05 // use 0x21 less unsensitive
+#define INT_THRESHOLD_XL2   0x11 // 0x21 = ~45-degree angle
 
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
@@ -87,7 +87,7 @@ typedef enum
 } juxtaConfigOffsets_t;
 
 // Timing
-#define JUXTA_LED_TIMEOUT_PERIOD        5 // ms
+#define JUXTA_LED_TIMEOUT_PERIOD        10 // ms
 #define TIME_SERVICE_UUID               0xEFFE // see iOS BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // 1us, Fs = 500kHz
@@ -666,8 +666,6 @@ static void doAdvertise(juxtaAdvModes_t advMode)
 {
     if (advMode == JUXTA_ADV_ONCE)
     {
-        // setup same as scan
-//        usleep(getSleepUs()); // use 1s period
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
                       DEFAULT_SCAN_DURATION);
         iAdv--;
@@ -952,7 +950,7 @@ static void platform_delay(uint32_t ms)
 
 static void timeoutLED(uint8_t index)
 {
-    if (index == LED1 || index == LED2)
+    if (index == LED1)
     {
         GPIO_write(index, 1);
         // restart ensures the clock is not started twice (avoid memory issues)
@@ -963,7 +961,6 @@ static void timeoutLED(uint8_t index)
 static void shutdownLEDs(void)
 {
     GPIO_write(LED1, 0);
-    GPIO_write(LED2, 0);
 }
 
 static ReturnType dumpData(uint32_t *addr, uint8_t *buffer, uint32_t BASE)
@@ -1136,7 +1133,7 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
         simpleProfile_SetParameter(JUXTAPROFILE_LOGCOUNT,
         JUXTAPROFILE_LOGCOUNT_LEN,
                                    &logCount);
-        timeoutLED(LED2);
+        timeoutLED(LED1);
 //        numScanRes = 0; do this in MR_EVT_SCAN_DISABLED
     }
 }
@@ -1166,7 +1163,6 @@ void multi_role_createTask(void)
 static void multi_role_init(void)
 {
     GPIO_write(LED1, 1);
-    GPIO_write(LED2, 1);
 
     ADC_init();
     ADC_Params_init(&adcParams_vBatt);
@@ -1178,7 +1174,6 @@ static void multi_role_init(void)
         while (1)
         {
             GPIO_toggle(LED1);
-            GPIO_toggle(LED2);
             usleep(50000);
         }
     }
@@ -1998,7 +1993,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
                     timeRef = strtol((char*) newTime, NULL, 16);
                     Util_restartClock(&clkJuxtaSubHz, JUXTA_SUBHZ_PERIOD);
                     subHzCount = 0; // reset
-                    timeoutLED(LED2);
+                    timeoutLED(LED1);
                     break;
                 }
             }
