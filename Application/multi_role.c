@@ -20,6 +20,9 @@
 #include <ti/sysbios/knl/Queue.h>
 #include <ti/sysbios/knl/Task.h>
 
+#include <time.h>
+#include <ti/sysbios/hal/Seconds.h>
+
 #if (!(defined FREERTOS) && !(defined __TI_COMPILER_VERSION__)) && !(defined(__clang__))
 #include <intrinsics.h>
 #endif
@@ -28,6 +31,9 @@
 #include <ti/drivers/GPIO.h>
 #include <ti/drivers/NVS.h>
 #include <ti/drivers/SPI.h>
+#include <ti/drivers/Power.h>
+#include <ti/drivers/power/PowerCC26XX.h>
+#include <driverlib/osc.h> // only for modifying osc
 //#include <ti/drivers/UART2.h>
 
 #include <icall.h>
@@ -53,12 +59,12 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230421";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230423";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
 #define INT_DURATION_6D     1 // N/ODR
-#define INT_THRESHOLD_XL2   0x11 // 0x21 = ~45-degree angle
+#define INT_THRESHOLD_XL2   0x08 // 0x21 = ~45-degree angle
 
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
@@ -354,7 +360,7 @@ static uint8_t juxtaMode;
 static bool scanInitDone = false;
 static bool advertInitDone = false;
 static uint8_t iAdv = 0, iScan = 0;
-static uint32_t subHzCount = 0;
+static uint32_t localTime = 0;
 
 static uint8_t advScanIterations;
 static uint32_t advScanIterations_table[4] = { 1, 2, 5, 10 };
@@ -379,7 +385,6 @@ static bool isConnected = false;
 NVS_Handle nvsConfigHandle;
 NVS_Attrs regionAttrs;
 static uint32_t nvsConfigBuffer[JUXTA_CONFIG_OFFSET_NUMEL];
-static uint32_t timeRef = 0;
 
 static int16_t data_raw_acceleration[3];
 static int16_t data_raw_magnetic[3];
@@ -492,7 +497,6 @@ static void loadConfigs(void);
 static void saveConfigs(void);
 static void logScan(void);
 static void logMetaData(uint8_t dataType, float data, uint32_t lastTime);
-static uint32_t calcActualTime(void);
 static void doScan(juxtaScanModes_t scanMode);
 static void doAdvertise(juxtaAdvModes_t advMode);
 ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
@@ -539,6 +543,19 @@ static gapBondCBs_t multi_role_BondMgrCBs = { multi_role_passcodeCB, // Passcode
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
+static void restartIntervalClock(void)
+{
+    localTime = Seconds_get();
+    // next time localTime % juxtaModuloInterval == 0
+    uint32_t intervalTimeout = (juxtaModuloInterval
+            - localTime % juxtaModuloInterval) % juxtaModuloInterval;
+    // this clock delays for the right modulo and sets period based on user settings
+    if (intervalTimeout == 0) {
+        intervalTimeout = juxtaModuloInterval; // safeguard from restarting with immediate timeout
+    }
+    Util_restartClock(&clkJuxtaIntervalMode, intervalTimeout * 1000);
+}
+
 // could also make juxtaOptions a global
 static uint8_t getJuxtaOptions()
 {
@@ -629,24 +646,6 @@ static void logMetaData(uint8_t dataType, float data, uint32_t lastTime)
     JUXTAPROFILE_METACOUNT_LEN,
                                &metaCount);
     setMetaRecovery(tempAddr, tempCount, ret); // if a page was written, commit these
-}
-
-static uint32_t calcActualTime(void)
-{
-    uint32_t actualTime = timeRef + (JUXTA_SUBHZ_PERIOD / 1000)
-            - (Clock_getTimeout(&clkJuxtaSubHz) / 1e5)
-            + (JUXTA_SUBHZ_PERIOD * subHzCount / 1000);
-    return actualTime;
-}
-
-static int32 getSleepUs(void)
-{
-    int32_t sleepUs = 1e6 - (DEFAULT_SCAN_WINDOW * 625); // window is when scan is on
-//    int32_t sleepUs = 1e6 - (DEFAULT_SCAN_DURATION * 10 * 1e3);
-    if (sleepUs > 0) {
-        return sleepUs;
-    }
-    return 0;
 }
 
 static void doScan(juxtaScanModes_t scanMode)
@@ -1104,9 +1103,9 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
         return;
 
     uint8_t i;
-    uint32_t actualTime = calcActualTime();
     if (numScanRes > 0)
     {
+        localTime = Seconds_get();
         for (i = 0; i < numScanRes; i++)
         {
             uint32_t tempAddr = logAddr;
@@ -1124,7 +1123,7 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
             memcpy(logEntry + iEntry, &scanList[i].rssi,
                    sizeof(scanList[i].rssi));
             iEntry += sizeof(scanList[i].rssi);
-            memcpy(logEntry + iEntry, &actualTime, sizeof(actualTime));
+            memcpy(logEntry + iEntry, &localTime, sizeof(localTime));
             ReturnType ret = NAND_Write(&logAddr, logBuffer, logEntry,
             JUXTA_LOG_ENTRY_SIZE);
             logCount++;
@@ -1164,11 +1163,30 @@ static void multi_role_init(void)
 {
     GPIO_write(LED1, 1);
 
+    // https://dev.ti.com/tirex/explore/node?node=A__AFqGfTyW2A4kyl8oykWk8Q__com.ti.SIMPLELINK_CC13XX_CC26XX_SDK__BSEc4rl__6.20.00.29
+    Seconds_set(0);
+
+//    if (GPIO_read(BASE_GPIO) == 0)
+//    {
+//        OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_RCOSC_LF);
+//        while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_RCOSC_LF)
+//            ;
+//    }
+
+//    Power_setDependency
+
+//    if (GPIO_read(BASE_GPIO) == 0)
+//    {
+//        Power_setConstraint(PowerCC26XX_SD_DISALLOW);
+//        Power_setConstraint(PowerCC26XX_SB_DISALLOW);
+//        Power_setConstraint(PowerCC26XX_IDLE_PD_DISALLOW);
+//    }
+
     ADC_init();
     ADC_Params_init(&adcParams_vBatt);
     adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
     setVoltage();
-    // danger zone, undefined behavior, just blink
+// danger zone, undefined behavior, just blink
     if (vbatt < VDROPOUT)
     {
         while (1)
@@ -1261,7 +1279,7 @@ static void multi_role_init(void)
     lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_a); // INT1_CFG_A
     lsm303agr_int1_src_a_t int1_src_reg_a;
 
-    // INT2 config
+// INT2 config
     lsm303agr_int2_cfg_a_t int2_cfg_a = { 0 };
     int2_cfg_a.aoi = 1; // 6-direction position recognition
     int2_cfg_a._6d = 1;
@@ -1284,7 +1302,7 @@ static void multi_role_init(void)
     /* Set / Reset magnetic sensor mode */
     lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,
                                    LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
-    // LSM303AGR_POWER_DOWN, LSM303AGR_SINGLE_TRIGGER, LSM303AGR_CONTINUOUS_MODE
+// LSM303AGR_POWER_DOWN, LSM303AGR_SINGLE_TRIGGER, LSM303AGR_CONTINUOUS_MODE
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
 //    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
 //    lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
@@ -1361,7 +1379,7 @@ static void multi_role_init(void)
                                    &metaCount);
         simpleProfile_SetParameter(JUXTAPROFILE_LOCALTIME,
         JUXTAPROFILE_LOCALTIME_LEN,
-                                   &timeRef);
+                                   &localTime);
         simpleProfile_SetParameter(JUXTAPROFILE_VBATT,
         JUXTAPROFILE_VBATT_LEN,
                                    &voltage_uv);
@@ -1392,39 +1410,39 @@ static void multi_role_init(void)
     GAP_DeviceInit(GAP_PROFILE_PERIPHERAL | GAP_PROFILE_CENTRAL, selfEntity,
                    addrMode, &pRandomAddress);
 
-    // connection periodic
+// connection periodic
     Util_constructClock(&clkJuxta1Hz, multi_role_clockHandler, 0,
     JUXTA_1HZ_PERIOD,
                         false, (UArg) &argJuxta1Hz);
-    // time keeper/save function
+// time keeper/save function
     Util_constructClock(&clkJuxtaSubHz, multi_role_clockHandler,
     JUXTA_SUBHZ_PERIOD,
                         JUXTA_SUBHZ_PERIOD,
                         true,
                         (UArg) &argJuxtaSubHz);
-    // simple LED timeout/turnoff (blink)
+// simple LED timeout/turnoff (blink)
     Util_constructClock(&clkJuxtaLEDTimeout, multi_role_clockHandler,
     JUXTA_LED_TIMEOUT_PERIOD,
                         0, false, (UArg) &argJuxtaLEDTimeout);
-    // one-shot, add period later
+// one-shot, add period later
     Util_constructClock(&clkJuxtaIntervalMode, multi_role_clockHandler, 0, 0,
     false,
                         (UArg) &argJuxtaIntervalMode);
-    // one-shot to yoke XL logging sampling rate
+// one-shot to yoke XL logging sampling rate
     Util_constructClock(&clkJuxtaXLIntTimeout, multi_role_clockHandler,
                         juxtaIntTimeout, 0,
                         false,
                         (UArg) &argJuxtaXLIntTimeout);
-    // one-shot to yoke MG logging sampling rate
+// one-shot to yoke MG logging sampling rate
     Util_constructClock(&clkJuxtaMGIntTimeout, multi_role_clockHandler,
                         juxtaIntTimeout, 0,
                         false,
                         (UArg) &argJuxtaMGIntTimeout);
-    // check status of scan/adv init
+// check status of scan/adv init
     Util_constructClock(&clkJuxtaStartup, multi_role_clockHandler,
     JUXTA_STARTUP_TIMEOUT,
                         JUXTA_STARTUP_TIMEOUT, true, (UArg) &argJuxtaStartup);
-    // interrupts and mode are handled at JUXTA_EVT_STARTUP -> JUXTA_EVT_DISCONNECTED
+// interrupts and mode are handled at JUXTA_EVT_STARTUP -> JUXTA_EVT_DISCONNECTED
     shutdownLEDs();
 }
 
@@ -1990,9 +2008,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
                 {
                     memcpy(newTime, pAdvRpt->pData + svcLoc + 4,
                            sizeof(newTime));
-                    timeRef = strtol((char*) newTime, NULL, 16);
-                    Util_restartClock(&clkJuxtaSubHz, JUXTA_SUBHZ_PERIOD);
-                    subHzCount = 0; // reset
+                    localTime = strtol((char*) newTime, NULL, 16); // because it was a string
+                    Seconds_set(localTime);
                     timeoutLED(LED1);
                     break;
                 }
@@ -2015,24 +2032,15 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_DISABLED:
     {
-//        if (juxtaMode == JUXTA_MODE_BASE)
-//        {
-//            logScan();
-//            numScanRes = 0;
-//            doScan(JUXTA_SCAN_ONCE); // repeat
-//        }
-//        else
-//        {
-            if (iScan == 0)
-            {
-                logScan();
-                numScanRes = 0;
-            }
-            else
-            {
-                doScan(JUXTA_SCAN_ONCE); // repeat
-            }
-//        }
+        if (iScan == 0)
+        {
+            logScan();
+            numScanRes = 0;
+        }
+        else
+        {
+            doScan(JUXTA_SCAN_ONCE); // repeat
+        }
         break;
     }
 
@@ -2083,17 +2091,16 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             break;
         setVoltage();
         setTemp();
-        uint32_t actualTime = calcActualTime();
+        localTime = Seconds_get();
         simpleProfile_SetParameter(JUXTAPROFILE_LOCALTIME,
         JUXTAPROFILE_LOCALTIME_LEN,
-                                   &actualTime);
+                                   &localTime);
         GPIO_write(LED1, 0);
         break;
     }
 
     case JUXTA_EVT_SUBHZ:
     {
-        subHzCount++; // must-do: nothing before this
         if (dumpResetFlag == 0 || isConnected)
         {
             break;
@@ -2113,9 +2120,9 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         if (juxtaMode != JUXTA_MODE_SHELF)
         {
             setTemp();
-            uint32_t actualTime = calcActualTime();
-            logMetaData(JUXTA_DATATYPE_TEMP, temperature_degC, actualTime);
-            logMetaData(JUXTA_DATATYPE_VBATT, vbatt, actualTime);
+            localTime = Seconds_get();
+            logMetaData(JUXTA_DATATYPE_TEMP, temperature_degC, localTime);
+            logMetaData(JUXTA_DATATYPE_VBATT, vbatt, localTime);
         }
 
         if (forceSave && has_NAND)
@@ -2175,8 +2182,11 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         dumpResetFlag = 1;
         GPIO_disableInt(INT_XL_1);
         GPIO_disableInt(INT_XL_2);
-        uint32_t actualTime = calcActualTime();
-        logMetaData(JUXTA_DATATYPE_CONN, 0, actualTime);
+        localTime = Seconds_get();
+        simpleProfile_SetParameter(JUXTAPROFILE_LOCALTIME,
+        JUXTAPROFILE_LOCALTIME_LEN,
+                                   &localTime);
+        logMetaData(JUXTA_DATATYPE_CONN, 0, localTime);
         break;
     }
 
@@ -2188,13 +2198,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         Util_stopClock(&clkJuxta1Hz);
         if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_BASE)
         {
-            uint32_t actualTime = calcActualTime();
-            // next time actualTime % juxtaModuloInterval == 0
-            uint32_t intervalTimeout = (juxtaModuloInterval
-                    - actualTime % juxtaModuloInterval) % juxtaModuloInterval;
-            // this clock delays for the right modulo and sets period based on user settings
-            Util_rescheduleClock(&clkJuxtaIntervalMode, intervalTimeout * 1000,
-                                 juxtaModuloInterval * 1000);
+            restartIntervalClock();
         }
         if (juxtaMode == JUXTA_MODE_BASE)
         {
@@ -2222,7 +2226,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_XL1:
     {
-        lastXLIntTime = calcActualTime();
+        lastXLIntTime = Seconds_get();
         // should not be entering twice, but just use restartClock()
         Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
         break;
@@ -2250,7 +2254,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     case JUXTA_EVT_INT_MG:
     {
         timeoutLED(LED1);
-        lastMGIntTime = calcActualTime();
+        lastMGIntTime = Seconds_get();
         Util_restartClock(&clkJuxtaMGIntTimeout, juxtaIntTimeout); // controls logging
         if (!isConnected)
         {
@@ -2320,10 +2324,11 @@ static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 
         // Sent when an advertisement set is terminated due to a connection/duration ended
     case GAP_EVT_ADV_SET_TERMINATED:
-        clearIntXL2();
         if (iAdv > 0)
         {
             doAdvertise(JUXTA_ADV_ONCE); // repeat
+        } else {
+            clearIntXL2(); // safeguard from clearing during interval mode
         }
         break;
 
@@ -2561,13 +2566,8 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         break;
     case JUXTAPROFILE_LOCALTIME: // LOCAL TIME
         retProfile = simpleProfile_GetParameter(JUXTAPROFILE_LOCALTIME, pValue);
-        memcpy(&timeRef, pValue, sizeof(uint32_t));
-        Util_restartClock(&clkJuxtaSubHz, JUXTA_SUBHZ_PERIOD);
-        subHzCount = 0; // reset
-        // !! TEMP
-        lsm303agr_int2_src_a_t int2_src_reg_a;
-        lsm303agr_xl_int2_gen_source_get(&dev_ctx_xl, &int2_src_reg_a);
-        // !! TEMP
+        memcpy(&localTime, pValue, sizeof(uint32_t));
+        Seconds_set(localTime);
         break;
     case JUXTAPROFILE_ADVMODE: // ADVERTISE MODE
         retProfile = simpleProfile_GetParameter(JUXTAPROFILE_ADVMODE, pValue);

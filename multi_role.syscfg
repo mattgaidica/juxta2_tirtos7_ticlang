@@ -170,7 +170,7 @@ GPIO11.initialOutputState = "High";
 GPIO11.outputStrength     = "Low";
 GPIO11.gpioPin.$assign    = "DIO_7";
 
-GPIO12.$name           = "RX";
+GPIO12.$name           = "BASE_GPIO";
 GPIO12.gpioPin.$assign = "DIO_12";
 
 GPIO13.$name           = "TX";
