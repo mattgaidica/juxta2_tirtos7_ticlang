@@ -59,12 +59,12 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230423";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230424";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
 #define INT_DURATION_6D     1 // N/ODR
-#define INT_THRESHOLD_XL2   0x08 // 0x21 = ~45-degree angle
+#define INT_THRESHOLD_XL2   0x06 // 0x21 = ~45-degree angle
 
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
@@ -85,10 +85,10 @@ typedef enum
     JUXTA_CONFIG_OFFSET_METACOUNT,
     JUXTA_CONFIG_OFFSET_METAADDR,
     JUXTA_CONFIG_OFFSET_MODE,
+    JUXTA_CONFIG_OFFSET_SUBJECT0,
     JUXTA_CONFIG_OFFSET_SUBJECT1,
     JUXTA_CONFIG_OFFSET_SUBJECT2,
     JUXTA_CONFIG_OFFSET_SUBJECT3,
-    JUXTA_CONFIG_OFFSET_SUBJECT4,
     JUXTA_CONFIG_OFFSET_NUMEL // leave at end
 } juxtaConfigOffsets_t;
 
@@ -349,10 +349,9 @@ static uint32_t lastXLIntTime, lastMGIntTime;
 
 typedef enum
 {
-    JUXTA_MODE_SHELF,
-    JUXTA_MODE_INTERVAL,
-    JUXTA_MODE_MOTION,
-    JUXTA_MODE_BASE,
+    JUXTA_MODE_SHELF, JUXTA_MODE_INTERVAL,
+//    JUXTA_MODE_MOTION,
+//    JUXTA_MODE_BASE,
     JUXTA_MODE_NUMEL // leave at end
 } juxtaMode_t;
 
@@ -365,7 +364,7 @@ static uint32_t localTime = 0;
 static uint8_t advScanIterations;
 static uint32_t advScanIterations_table[4] = { 1, 2, 5, 10 };
 static uint32_t juxtaModuloInterval;
-static uint32_t juxtaModuloInterval_table[4] = { 30, 60, 360, 3600 };
+static uint32_t juxtaModuloInterval_table[4] = { 20, 30, 60, 300 };
 static bool scanWithMagnet = false;
 static uint32_t juxtaIntTimeout = 1000 * 60; // default should never used though
 static uint32_t juxtaIntTimeout_table[2] = { 1000 * 60, 1000 * 10 };
@@ -381,6 +380,7 @@ typedef enum
 } juxtaAdvModes_t;
 
 static bool isConnected = false;
+static bool isBase; // set at init
 
 NVS_Handle nvsConfigHandle;
 NVS_Attrs regionAttrs;
@@ -412,6 +412,10 @@ GPIO_PinConfig sdioPinConfigs[2] = { GPIO_CFG_OUTPUT_INTERNAL
                                      GPIO_CFG_INPUT_INTERNAL
                                              | GPIO_CFG_IN_INT_NONE
                                              | GPIO_CFG_PULL_NONE_INTERNAL, /* INPUT */
+};
+
+GPIO_PinConfig basePinConfig[1] = { GPIO_CFG_INPUT_INTERNAL
+        | GPIO_CFG_IN_INT_NONE | GPIO_CFG_PULL_NONE_INTERNAL, /* INPUT */
 };
 
 static char newAddress[GAP_DEVICE_NAME_LEN] = "";
@@ -550,7 +554,8 @@ static void restartIntervalClock(void)
     uint32_t intervalTimeout = (juxtaModuloInterval
             - localTime % juxtaModuloInterval) % juxtaModuloInterval;
     // this clock delays for the right modulo and sets period based on user settings
-    if (intervalTimeout == 0) {
+    if (intervalTimeout == 0)
+    {
         intervalTimeout = juxtaModuloInterval; // safeguard from restarting with immediate timeout
     }
     Util_restartClock(&clkJuxtaIntervalMode, intervalTimeout * 1000);
@@ -583,7 +588,7 @@ static uint8_t getJuxtaOptions()
     {
         juxtaOptions |= 0b01000000;
     }
-    if (scanWithMagnet)
+    if (isBase)
     {
         juxtaOptions |= 0b10000000;
     }
@@ -610,14 +615,7 @@ static void setJuxtaOptions(uint8_t juxtaOptions)
     {
         juxtaIntTimeout = juxtaIntTimeout_table[0];
     }
-    if ((0b10000000 & juxtaOptions) >> 7)
-    {
-        scanWithMagnet = true;
-    }
-    else
-    {
-        scanWithMagnet = false;
-    }
+    // 0b10000000 = isBase, read only set at init
 }
 
 // could test status, but not sure what to do with it
@@ -1037,7 +1035,7 @@ static void saveConfigs(void)
     uint8_t juxtaOptions = getJuxtaOptions();
     nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE] = (uint32_t) juxtaOptions;
     // convert from uint8 arr
-    memcpy(&nvsConfigBuffer[JUXTA_CONFIG_OFFSET_SUBJECT1],
+    memcpy(&nvsConfigBuffer[JUXTA_CONFIG_OFFSET_SUBJECT0],
            &juxtaProfile_subject, sizeof(juxtaProfile_subject));
     NVS_write(nvsConfigHandle, 0, (void*) nvsConfigBuffer,
               sizeof(nvsConfigBuffer),
@@ -1058,7 +1056,7 @@ static void loadConfigs(void)
 
     // convert back to uint8 arr
     memcpy(&juxtaProfile_subject,
-           &nvsConfigBuffer[JUXTA_CONFIG_OFFSET_SUBJECT1],
+           &nvsConfigBuffer[JUXTA_CONFIG_OFFSET_SUBJECT0],
            sizeof(juxtaProfile_subject));
 
     uint32_t readAddr;
@@ -1166,16 +1164,10 @@ static void multi_role_init(void)
     // https://dev.ti.com/tirex/explore/node?node=A__AFqGfTyW2A4kyl8oykWk8Q__com.ti.SIMPLELINK_CC13XX_CC26XX_SDK__BSEc4rl__6.20.00.29
     Seconds_set(0);
 
-//    if (GPIO_read(BASE_GPIO) == 0)
-//    {
-//        OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_RCOSC_LF);
-//        while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_RCOSC_LF)
-//            ;
-//    }
+    isBase = !GPIO_read(BASE_GPIO);
+    GPIO_setConfig(BASE_GPIO, basePinConfig[0]); // remove pull-up to decrease power consumption
 
-//    Power_setDependency
-
-//    if (GPIO_read(BASE_GPIO) == 0)
+//    if (isBase)
 //    {
 //        Power_setConstraint(PowerCC26XX_SD_DISALLOW);
 //        Power_setConstraint(PowerCC26XX_SB_DISALLOW);
@@ -1443,6 +1435,10 @@ static void multi_role_init(void)
     JUXTA_STARTUP_TIMEOUT,
                         JUXTA_STARTUP_TIMEOUT, true, (UArg) &argJuxtaStartup);
 // interrupts and mode are handled at JUXTA_EVT_STARTUP -> JUXTA_EVT_DISCONNECTED
+    if (isBase)
+    {
+        HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_5_DBM);
+    }
     shutdownLEDs();
 }
 
@@ -2196,21 +2192,9 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         Util_stopClock(&clkJuxta1Hz);
-        if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_BASE)
+        if (juxtaMode == JUXTA_MODE_INTERVAL)
         {
             restartIntervalClock();
-        }
-        if (juxtaMode == JUXTA_MODE_BASE)
-        {
-            // could also use extended advertising set
-            HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_5_DBM);
-        }
-        else
-        {
-            HCI_EXT_SetTxPowerCmd(DEFAULT_TX_POWER);
-        }
-        if (juxtaMode == JUXTA_MODE_INTERVAL || juxtaMode == JUXTA_MODE_MOTION)
-        {
             clearIntXL1();
             GPIO_enableInt(INT_XL_1);
         }
@@ -2327,7 +2311,9 @@ static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
         if (iAdv > 0)
         {
             doAdvertise(JUXTA_ADV_ONCE); // repeat
-        } else {
+        }
+        else
+        {
             clearIntXL2(); // safeguard from clearing during interval mode
         }
         break;

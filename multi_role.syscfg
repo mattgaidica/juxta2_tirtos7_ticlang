@@ -102,11 +102,12 @@ CCFG.xoscCapArrayDelta       = 0xC1;
 CCFG.dioBootloaderBackdoor   = 15;
 CCFG.levelBootloaderBackdoor = "Active low";
 CCFG.srcClkLF                = "LF RCOSC";
+CCFG.enableDCDC              = false;
 CCFG.ccfgTemplate.$name      = "ti_devices_CCFG_CCFGCC26XXTemplate0";
 
 rfdesign.fbSub1g = "none";
-rfdesign.pa20    = "none";
 rfdesign.fe24g   = "ID";
+rfdesign.pa20    = "none";
 
 ADC1.$name              = "CONFIG_ADC_VBATT";
 ADC1.adc.adcPin.$assign = "DIO_23";
@@ -171,6 +172,7 @@ GPIO11.outputStrength     = "Low";
 GPIO11.gpioPin.$assign    = "DIO_7";
 
 GPIO12.$name           = "BASE_GPIO";
+GPIO12.pull            = "Pull Up";
 GPIO12.gpioPin.$assign = "DIO_12";
 
 GPIO13.$name           = "TX";
