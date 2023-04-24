@@ -93,7 +93,7 @@ typedef enum
 } juxtaConfigOffsets_t;
 
 // Timing
-#define JUXTA_LED_TIMEOUT_PERIOD        10 // ms
+#define JUXTA_LED_TIMEOUT_PERIOD        100 // ms
 #define TIME_SERVICE_UUID               0xEFFE // see iOS BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // 1us, Fs = 500kHz
@@ -2082,7 +2082,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_1HZ:
     {
-        GPIO_write(LED1, 1);
         if (dumpResetFlag == 0) // busy
             break;
         setVoltage();
@@ -2091,7 +2090,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         simpleProfile_SetParameter(JUXTAPROFILE_LOCALTIME,
         JUXTAPROFILE_LOCALTIME_LEN,
                                    &localTime);
-        GPIO_write(LED1, 0);
         break;
     }
 
@@ -2149,6 +2147,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INTERVAL_MODE:
     {
+        restartIntervalClock(); // always use current timestamp instead of relying on period
         // kicks off scan/adv when entered
         iScan = advScanIterations;
         iAdv = advScanIterations;
@@ -2165,6 +2164,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_CONNECTED:
     {
+        GPIO_write(LED1, 1);
         doScan(JUXTA_SCAN_DISABLE);
         doAdvertise(JUXTA_ADV_DISABLE);
         iScan = 0; // stop the loop
@@ -2188,6 +2188,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_DISCONNECTED:
     {
+        GPIO_write(LED1, 0);
         isConnected = false;
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
@@ -2196,11 +2197,11 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         {
             restartIntervalClock();
             clearIntXL1();
-            GPIO_enableInt(INT_XL_1);
+            GPIO_enableInt(INT_XL_1); // movement on
         }
         else
         {
-            GPIO_disableInt(INT_XL_1);
+            GPIO_disableInt(INT_XL_1); // ie, base station
         }
         // init
         clearIntXL2();
