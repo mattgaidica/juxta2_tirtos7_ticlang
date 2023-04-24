@@ -100,6 +100,7 @@ typedef enum
 #define JUXTA_1HZ_PERIOD                1000 // ms
 #define JUXTA_SUBHZ_PERIOD              1000 * 60 * 5 // ms
 #define JUXTA_STARTUP_TIMEOUT           100 // ms
+#define JUXTA_6D_SHAKE_TO_WAKE_AFTER    60 // s
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -2211,6 +2212,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_XL1:
     {
+        if (Seconds_get() - lastXLIntTime > JUXTA_6D_SHAKE_TO_WAKE_AFTER)
+        {
+            clearIntXL2(); // wakeup to receive JUXTA_EVT_INT_XL2
+        }
         lastXLIntTime = Seconds_get();
         // should not be entering twice, but just use restartClock()
         Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
@@ -2228,10 +2233,13 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         if (!isConnected && iAdv == 0) // ensures interval mode is not active
         {
-            // if interval is active, adv should still clear XL2
-            timeoutLED(LED1);
-            iAdv = 1;
-            doAdvertise(JUXTA_ADV_ONCE);
+            // turn off if device has not moved recently
+            if (Seconds_get() - lastXLIntTime < JUXTA_6D_SHAKE_TO_WAKE_AFTER)
+            {
+                timeoutLED(LED1);
+                iAdv = 1;
+                doAdvertise(JUXTA_ADV_ONCE); // XL2 is cleared here
+            }
         }
         break;
     }
