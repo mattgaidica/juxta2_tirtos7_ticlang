@@ -100,7 +100,7 @@ typedef enum
 #define JUXTA_1HZ_PERIOD                1000 // ms
 #define JUXTA_SUBHZ_PERIOD              1000 * 60 * 5 // ms
 #define JUXTA_STARTUP_TIMEOUT           100 // ms
-#define JUXTA_6D_SHAKE_TO_WAKE_AFTER    60 // s
+#define JUXTA_6D_SHAKE_TO_WAKE_AFTER    10 // s
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -365,8 +365,7 @@ static uint32_t localTime = 0;
 static uint8_t advScanIterations;
 static uint32_t advScanIterations_table[4] = { 1, 2, 5, 10 };
 static uint32_t juxtaModuloInterval;
-static uint32_t juxtaModuloInterval_table[4] = { 20, 30, 60, 300 };
-static bool scanWithMagnet = false;
+static uint32_t juxtaModuloInterval_table[4] = { 20, 30, 60, 360 };
 static uint32_t juxtaIntTimeout = 1000 * 60; // default should never used though
 static uint32_t juxtaIntTimeout_table[2] = { 1000 * 60, 1000 * 10 };
 
@@ -408,11 +407,11 @@ stmdev_ctx_t dev_ctx_xl;
 stmdev_ctx_t dev_ctx_mg;
 
 GPIO_PinConfig sdioPinConfigs[2] = { GPIO_CFG_OUTPUT_INTERNAL
-                                             | GPIO_CFG_OUT_STR_MED
+                                             | GPIO_CFG_OUT_STR_LOW
                                              | GPIO_CFG_OUT_LOW, /* OUTPUT */
                                      GPIO_CFG_INPUT_INTERNAL
                                              | GPIO_CFG_IN_INT_NONE
-                                             | GPIO_CFG_PULL_NONE_INTERNAL, /* INPUT */
+                                             | GPIO_CFG_PULL_UP_INTERNAL, /* INPUT */
 };
 
 GPIO_PinConfig basePinConfig[1] = { GPIO_CFG_INPUT_INTERNAL
@@ -875,6 +874,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         reg |= 0x40; // auto-increment r/w
     }
 
+    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // !! OUTPUT
     GPIO_write(sensbus->CLK_PIN, 1); // start high
     GPIO_write(sensbus->CS_PIN, 0); // active low
     usleep(1); // CS pin
@@ -902,7 +902,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         usleep(SPI_HALF_PERIOD); // delay again
     }
     GPIO_write(sensbus->CS_PIN, 1); // de-activate
-    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
+//    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
     return 0;
 }
 // for 3-wire SPI
@@ -938,6 +938,7 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
         usleep(SPI_HALF_PERIOD); // delay again
     }
     GPIO_write(sensbus->CS_PIN, 1); // de-activate
+    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[1]); // !! INPUT
     return 0;
 }
 
@@ -2150,7 +2151,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         restartIntervalClock(); // always use current timestamp instead of relying on period
         // kicks off scan/adv when entered
-        iScan = advScanIterations;
+        iScan = 2;
         iAdv = advScanIterations;
         doAdvertise(JUXTA_ADV_ONCE);
         doScan(JUXTA_SCAN_ONCE);
@@ -2197,16 +2198,11 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         if (juxtaMode == JUXTA_MODE_INTERVAL)
         {
             restartIntervalClock();
-            clearIntXL1();
-            GPIO_enableInt(INT_XL_1); // movement on
         }
-        else
-        {
-            GPIO_disableInt(INT_XL_1); // ie, base station
-        }
-        // init
+        clearIntXL1();
+        GPIO_enableInt(INT_XL_1); // movement on, req for shake to wake
         clearIntXL2();
-        GPIO_enableInt(INT_XL_2);
+        GPIO_enableInt(INT_XL_2); // orientation
         break;
     }
 
@@ -2251,11 +2247,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         Util_restartClock(&clkJuxtaMGIntTimeout, juxtaIntTimeout); // controls logging
         if (!isConnected)
         {
-            if (scanWithMagnet)
-            {
-                iScan = 1; // !! prob want more if this is an animal/station
-                doScan(JUXTA_SCAN_ONCE);
-            }
             iAdv = 1; // !! prob want more if this is an animal/station
             doAdvertise(JUXTA_ADV_ONCE); // clearIntMG() here
         }
@@ -2264,11 +2255,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_MG_TIMEOUT:
     {
-        if (scanWithMagnet)
-        {
-            logMetaData(JUXTA_DATATYPE_MG, 0, lastMGIntTime);
-        }
-        // no clear is done by advertise (always occurs with magnet)
         break;
     }
 
