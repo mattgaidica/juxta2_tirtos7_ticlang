@@ -878,7 +878,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         reg |= 0x40; // auto-increment r/w
     }
 
-    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // !! OUTPUT
+//    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // !! OUTPUT
     GPIO_write(sensbus->CLK_PIN, 1); // start high
     GPIO_write(sensbus->CS_PIN, 0); // active low
     usleep(1); // CS pin
@@ -906,7 +906,7 @@ static int32_t platform_read(void *handle, uint8_t reg, uint8_t *bufp,
         usleep(SPI_HALF_PERIOD); // delay again
     }
     GPIO_write(sensbus->CS_PIN, 1); // de-activate
-//    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
+    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[0]); // set as output
     return 0;
 }
 // for 3-wire SPI
@@ -942,7 +942,7 @@ static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
         usleep(SPI_HALF_PERIOD); // delay again
     }
     GPIO_write(sensbus->CS_PIN, 1); // de-activate
-    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[1]); // !! INPUT
+//    GPIO_setConfig(sensbus->DIO_PIN, sdioPinConfigs[1]); // !! INPUT
     return 0;
 }
 
