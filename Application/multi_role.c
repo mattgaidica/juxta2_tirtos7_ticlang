@@ -43,7 +43,8 @@
 #include <icall_ble_api.h>
 
 #include <devinfoservice.h>
-#include <ti_ble_gatt_service.h>
+#include <juxta_gatt_service.h>
+//#include <clock_gatt_service.h>
 #include <ti_drivers_config.h>
 
 #include <ti_ble_config.h>
@@ -63,8 +64,8 @@ static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230424";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
-#define INT_DURATION_6D     1 // N/ODR
-#define INT_THRESHOLD_XL2   0x06 // 0x21 = ~45-degree angle
+#define INT_DURATION_6D     0 // N/ODR
+#define INT_THRESHOLD_XL2   0x08 // 0x21 = ~45-degree angle
 
 #define DUMP_RESET_KEY      0x00
 #define LOGS_DUMP_KEY       0x11
@@ -94,7 +95,6 @@ typedef enum
 
 // Timing
 #define JUXTA_LED_TIMEOUT_PERIOD        100 // ms
-#define TIME_SERVICE_UUID               0xEFFE // see iOS BLEPeripheralApp
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // 1us, Fs = 500kHz
 #define JUXTA_1HZ_PERIOD                1000 // ms
@@ -603,6 +603,10 @@ static void setJuxtaOptions(uint8_t juxtaOptions)
     // decode
     uint8_t k;
     juxtaMode = 0b00000011 & juxtaOptions;
+    if (juxtaMode >= JUXTA_MODE_NUMEL)
+    {
+        juxtaMode = JUXTA_MODE_SHELF;
+    }
     k = (0b00001100 & juxtaOptions) >> 2;
     advScanIterations = advScanIterations_table[k];
     k = (0b00110000 & juxtaOptions) >> 4;
@@ -625,8 +629,8 @@ static void logMetaData(uint8_t dataType, float data, uint32_t lastTime)
         return;
 
     uint8_t iEntry = 0;
-    uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(SIMPLEPROFILE_SERV_UUID),
-                                       HI_UINT16(SIMPLEPROFILE_SERV_UUID) };
+    uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(JUXTAPROFILE_SERV_UUID),
+                                       HI_UINT16(JUXTAPROFILE_SERV_UUID) };
 
     uint32_t tempAddr = metaAddr;
     uint32_t tempCount = metaCount;
@@ -1113,8 +1117,8 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
             uint8_t iEntry = 0;
             // load buffer
             uint8_t uuid[ATT_BT_UUID_SIZE] =
-                    { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
-                            SIMPLEPROFILE_SERV_UUID) };
+                    { LO_UINT16(JUXTAPROFILE_SERV_UUID), HI_UINT16(
+                            JUXTAPROFILE_SERV_UUID) };
 
             memcpy(logEntry, uuid, sizeof(uuid));
             iEntry += sizeof(uuid);
@@ -1987,32 +1991,32 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         GapScan_Evt_AdvRpt_t *pAdvRpt = (GapScan_Evt_AdvRpt_t*) (pMsg->pData);
 
 // do UUID filtering
-        if (multi_role_findSvcUuid(SIMPLEPROFILE_SERV_UUID, pAdvRpt->pData,
+        if (multi_role_findSvcUuid(JUXTAPROFILE_SERV_UUID, pAdvRpt->pData,
                                    pAdvRpt->dataLen))
         {
             multi_role_addScanInfo(pAdvRpt->addr, pAdvRpt->addrType,
                                    pAdvRpt->rssi);
         }
-        if (multi_role_findSvcUuid(TIME_SERVICE_UUID, pAdvRpt->pData,
-                                   pAdvRpt->dataLen))
-        {
-            uint8_t svcLoc;
-            uint8_t newTime[8] = { 0 };
-            for (svcLoc = 0; svcLoc < pAdvRpt->dataLen - 12; svcLoc++)
-            {
-                if (pAdvRpt->pData[svcLoc] == LO_UINT16(TIME_SERVICE_UUID)
-                        && pAdvRpt->pData[svcLoc + 1]
-                                == HI_UINT16(TIME_SERVICE_UUID))
-                {
-                    memcpy(newTime, pAdvRpt->pData + svcLoc + 4,
-                           sizeof(newTime));
-                    localTime = strtol((char*) newTime, NULL, 16); // because it was a string
-                    Seconds_set(localTime);
-                    timeoutLED(LED1);
-                    break;
-                }
-            }
-        }
+//        if (multi_role_findSvcUuid(CLOCKPROFILE_SERV_UUID, pAdvRpt->pData,
+//                                   pAdvRpt->dataLen))
+//        {
+//            uint8_t svcLoc;
+//            uint8_t newTime[8] = { 0 };
+//            for (svcLoc = 0; svcLoc < pAdvRpt->dataLen - 12; svcLoc++)
+//            {
+//                if (pAdvRpt->pData[svcLoc] == LO_UINT16(CLOCKPROFILE_SERV_UUID)
+//                        && pAdvRpt->pData[svcLoc + 1]
+//                                == HI_UINT16(CLOCKPROFILE_SERV_UUID))
+//                {
+//                    memcpy(newTime, pAdvRpt->pData + svcLoc + 4,
+//                           sizeof(newTime));
+//                    localTime = strtol((char*) newTime, NULL, 16); // because it was a string
+//                    Seconds_set(localTime);
+//                    timeoutLED(LED1);
+//                    break;
+//                }
+//            }
+//        }
 
 // Free scan payload data
         if (pAdvRpt->pData != NULL)
@@ -2151,7 +2155,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         restartIntervalClock(); // always use current timestamp instead of relying on period
         // kicks off scan/adv when entered
-        iScan = 2;
+        iScan = advScanIterations;
         iAdv = advScanIterations;
         doAdvertise(JUXTA_ADV_ONCE);
         doScan(JUXTA_SCAN_ONCE);
@@ -2208,13 +2212,15 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_XL1:
     {
-        if (Seconds_get() - lastXLIntTime > JUXTA_6D_SHAKE_TO_WAKE_AFTER)
-        {
-            clearIntXL2(); // wakeup to receive JUXTA_EVT_INT_XL2
-        }
+//        if (Seconds_get() - lastXLIntTime > JUXTA_6D_SHAKE_TO_WAKE_AFTER)
+//        {
+//            clearIntXL2(); // make sure orientation can be detected
+//        }
         lastXLIntTime = Seconds_get();
-        // should not be entering twice, but just use restartClock()
-        Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
+        // protect intInterval
+        if (!Util_isActive(&clkJuxtaXLIntTimeout)) {
+            Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
+        }
         break;
     }
 
@@ -2230,12 +2236,14 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         if (!isConnected && iAdv == 0) // ensures interval mode is not active
         {
             // turn off if device has not moved recently
-            if (Seconds_get() - lastXLIntTime < JUXTA_6D_SHAKE_TO_WAKE_AFTER)
-            {
+//            if (Seconds_get() - lastXLIntTime < JUXTA_6D_SHAKE_TO_WAKE_AFTER)
+//            {
                 timeoutLED(LED1);
                 iAdv = 1;
                 doAdvertise(JUXTA_ADV_ONCE); // XL2 is cleared here
-            }
+//            } else {
+//                clearIntXL1(); // make sure movement can be detected
+//            }
         }
         break;
     }
@@ -2677,8 +2685,8 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
         if (pMsg->method == ATT_EXCHANGE_MTU_RSP)
         {
             uint8_t uuid[ATT_BT_UUID_SIZE] =
-                    { LO_UINT16(SIMPLEPROFILE_SERV_UUID), HI_UINT16(
-                            SIMPLEPROFILE_SERV_UUID) };
+                    { LO_UINT16(JUXTAPROFILE_SERV_UUID), HI_UINT16(
+                            JUXTAPROFILE_SERV_UUID) };
 
             connList[connIndex].discState = BLE_DISC_STATE_SVC;
 
