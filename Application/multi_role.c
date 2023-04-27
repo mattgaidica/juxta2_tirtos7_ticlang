@@ -101,6 +101,8 @@ typedef enum
 #define JUXTA_SUBHZ_PERIOD              1000 * 60 * 5 // ms
 #define JUXTA_STARTUP_TIMEOUT           100 // ms
 #define JUXTA_6D_SHAKE_TO_WAKE_AFTER    10 // s
+#define JUXTA_CENTRAL_TIMEOUT           5000 // ms
+#define JUXTA_CONN_ATTEMPT_TIMEOUT      2000 // ms
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -127,6 +129,8 @@ typedef enum
 #define JUXTA_EVT_STARTUP          22
 #define JUXTA_EVT_INT_XL1_TIMEOUT  23
 #define JUXTA_EVT_INT_MG_TIMEOUT   24
+#define JUXTA_EVT_CENTRAL_TIMEOUT  25
+#define JUXTA_EVT_WRITE_GATT       26
 
 // Internal Events for RTOS application
 #define MR_ICALL_EVT                         ICALL_MSG_EVENT_ID // Event_Id_31
@@ -233,7 +237,8 @@ typedef struct
     uint16_t charHandle;           // Characteristic Handle
     uint8_t addr[B_ADDR_LEN];     // Peer Device Address
     Clock_Struct *pUpdateClock;         // pointer to clock struct
-    uint8_t discState;            // Per connection deiscovery state
+    uint8_t discState;            // Per connection discovery state
+    uint8_t role; // GAP_PROFILE_PERIPHERAL | GAP_PROFILE_CENTRAL
 } mrConnRec_t;
 
 /*********************************************************************
@@ -336,6 +341,9 @@ static Clock_Struct clkJuxtaXLIntTimeout;
 mrClockEventData_t argJuxtaXLIntTimeout = { .event = JUXTA_EVT_INT_XL1_TIMEOUT };
 static Clock_Struct clkJuxtaMGIntTimeout;
 mrClockEventData_t argJuxtaMGIntTimeout = { .event = JUXTA_EVT_INT_MG_TIMEOUT };
+static Clock_Struct clkJuxtaCentralTimeout;
+mrClockEventData_t argJuxtaCentralTimeout =
+        { .event = JUXTA_EVT_CENTRAL_TIMEOUT };
 
 typedef enum
 {
@@ -489,6 +497,10 @@ static void multi_role_passcodeCB(uint8_t *deviceAddr, uint16_t connHandle,
 static void multi_role_pairStateCB(uint16_t connHandle, uint8_t state,
                                    uint8_t status);
 static void multi_role_updateRPA(void);
+bool multi_role_doConnect(uint8_t index);
+bool multi_role_doGattRead(void);
+bool multi_role_doGattWrite(void);
+bool multi_role_doDisconnect(void);
 
 static int32_t platform_write(void *handle, uint8_t reg, const uint8_t *bufp,
                               uint16_t len);
@@ -547,6 +559,15 @@ static gapBondCBs_t multi_role_BondMgrCBs = { multi_role_passcodeCB, // Passcode
 /*********************************************************************
  * PUBLIC FUNCTIONS
  */
+static void juxtaTryTimeUpdate(void)
+{
+    for (uint8_t index = 0; index < numScanRes; index++)
+    {
+        multi_role_doConnect(index); // does GapInit_connect(scanList[index])...)
+        break; // !! rm, but this loop needs to handle multiple connections
+    }
+}
+
 static void restartIntervalClock(void)
 {
     localTime = Seconds_get();
@@ -562,7 +583,7 @@ static void restartIntervalClock(void)
 }
 
 // could also make juxtaOptions a global
-static uint8_t getJuxtaOptions()
+static uint8_t getJuxtaOptions(void)
 {
     // encode
     uint8_t juxtaOptions = 0, k;
@@ -1436,6 +1457,11 @@ static void multi_role_init(void)
                         juxtaIntTimeout, 0,
                         false,
                         (UArg) &argJuxtaMGIntTimeout);
+    Util_constructClock(&clkJuxtaCentralTimeout, multi_role_clockHandler,
+    JUXTA_CENTRAL_TIMEOUT,
+                        0,
+                        false,
+                        (UArg) &argJuxtaCentralTimeout);
 // check status of scan/adv init
     Util_constructClock(&clkJuxtaStartup, multi_role_clockHandler,
     JUXTA_STARTUP_TIMEOUT,
@@ -1630,7 +1656,6 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         uint8_t connIndex;
 //        uint8_t *pStrAddr;
 
-        BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- got GAP_LINK_ESTABLISHED_EVENT", 0);
 // Add this connection info to the list
         connIndex = multi_role_addConnInfo(connHandle, pAddr, role);
 // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
@@ -1997,26 +2022,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             multi_role_addScanInfo(pAdvRpt->addr, pAdvRpt->addrType,
                                    pAdvRpt->rssi);
         }
-//        if (multi_role_findSvcUuid(CLOCKPROFILE_SERV_UUID, pAdvRpt->pData,
-//                                   pAdvRpt->dataLen))
-//        {
-//            uint8_t svcLoc;
-//            uint8_t newTime[8] = { 0 };
-//            for (svcLoc = 0; svcLoc < pAdvRpt->dataLen - 12; svcLoc++)
-//            {
-//                if (pAdvRpt->pData[svcLoc] == LO_UINT16(CLOCKPROFILE_SERV_UUID)
-//                        && pAdvRpt->pData[svcLoc + 1]
-//                                == HI_UINT16(CLOCKPROFILE_SERV_UUID))
-//                {
-//                    memcpy(newTime, pAdvRpt->pData + svcLoc + 4,
-//                           sizeof(newTime));
-//                    localTime = strtol((char*) newTime, NULL, 16); // because it was a string
-//                    Seconds_set(localTime);
-//                    timeoutLED(LED1);
-//                    break;
-//                }
-//            }
-//        }
 
 // Free scan payload data
         if (pAdvRpt->pData != NULL)
@@ -2034,6 +2039,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case MR_EVT_SCAN_DISABLED:
     {
+        if (isBase && numScanRes > 0)
+        {
+            juxtaTryTimeUpdate(); // try right away
+        }
         if (iScan == 0)
         {
             logScan();
@@ -2046,11 +2055,11 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         break;
     }
 
-    case MR_EVT_SVC_DISC:
-    {
-        multi_role_startSvcDiscovery();
-        break;
-    }
+//    case MR_EVT_SVC_DISC:
+//    {
+//        multi_role_startSvcDiscovery();
+//        break;
+//    }
 
     case MR_EVT_ADV:
     {
@@ -2178,17 +2187,26 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         Util_stopClock(&clkJuxtaIntervalMode);
         Util_stopClock(&clkJuxtaXLIntTimeout); // gets cleared at disconnect
         Util_stopClock(&clkJuxtaMGIntTimeout); // gets cleared at disconnect
-        Util_startClock(&clkJuxta1Hz);
         isConnected = true;
         dumpCount = 0; // should be reset, but make sure
         dumpResetFlag = 1;
         GPIO_disableInt(INT_XL_1);
         GPIO_disableInt(INT_XL_2);
-        localTime = Seconds_get();
-        simpleProfile_SetParameter(JUXTAPROFILE_LOCALTIME,
-        JUXTAPROFILE_LOCALTIME_LEN,
-                                   &localTime);
         logMetaData(JUXTA_DATATYPE_CONN, 0, localTime);
+        if (connList[0].role == GAP_PROFILE_CENTRAL) // contains role
+        {
+            mrConnHandle  = connList[0].connHandle;
+            multi_role_startSvcDiscovery();
+            Util_startClock(&clkJuxtaCentralTimeout);
+        }
+        else
+        {
+            localTime = Seconds_get();
+            simpleProfile_SetParameter(JUXTAPROFILE_LOCALTIME,
+            JUXTAPROFILE_LOCALTIME_LEN,
+                                       &localTime);
+            Util_startClock(&clkJuxta1Hz);
+        }
         break;
     }
 
@@ -2199,6 +2217,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         Util_stopClock(&clkJuxta1Hz);
+        Util_stopClock(&clkJuxtaCentralTimeout);
         if (juxtaMode == JUXTA_MODE_INTERVAL)
         {
             restartIntervalClock();
@@ -2218,7 +2237,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 //        }
         lastXLIntTime = Seconds_get();
         // protect intInterval
-        if (!Util_isActive(&clkJuxtaXLIntTimeout)) {
+        if (!Util_isActive(&clkJuxtaXLIntTimeout))
+        {
             Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
         }
         break;
@@ -2238,9 +2258,9 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             // turn off if device has not moved recently
 //            if (Seconds_get() - lastXLIntTime < JUXTA_6D_SHAKE_TO_WAKE_AFTER)
 //            {
-                timeoutLED(LED1);
-                iAdv = 1;
-                doAdvertise(JUXTA_ADV_ONCE); // XL2 is cleared here
+            timeoutLED(LED1);
+            iAdv = 1;
+            doAdvertise(JUXTA_ADV_ONCE); // XL2 is cleared here
 //            } else {
 //                clearIntXL1(); // make sure movement can be detected
 //            }
@@ -2263,6 +2283,18 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_MG_TIMEOUT:
     {
+        break;
+    }
+
+    case JUXTA_EVT_CENTRAL_TIMEOUT:
+    {
+        multi_role_doDisconnect(); // GAP_TerminateLinkReq(mrConnHandle,...)
+        break;
+    }
+
+    case JUXTA_EVT_WRITE_GATT:
+    {
+        multi_role_doGattWrite();
         break;
     }
 
@@ -2672,6 +2704,10 @@ static void multi_role_clockHandler(UArg arg)
     {
         multi_role_enqueueMsg(JUXTA_EVT_INT_MG_TIMEOUT, NULL);
     }
+    else if (pData->event == JUXTA_EVT_CENTRAL_TIMEOUT)
+    {
+        multi_role_enqueueMsg(JUXTA_EVT_CENTRAL_TIMEOUT, NULL);
+    }
 }
 
 static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
@@ -2716,14 +2752,14 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
             {
                 attReadByTypeReq_t req;
 
-                // Discover characteristic
+                // Discover LOCALTIME characteristic
                 connList[connIndex].discState = BLE_DISC_STATE_CHAR;
 
                 req.startHandle = svcStartHdl;
                 req.endHandle = svcEndHdl;
                 req.type.len = ATT_BT_UUID_SIZE;
-                req.type.uuid[0] = LO_UINT16(JUXTAPROFILE_LOGCOUNT_UUID);
-                req.type.uuid[1] = HI_UINT16(JUXTAPROFILE_LOGCOUNT_UUID);
+                req.type.uuid[0] = LO_UINT16(JUXTAPROFILE_LOCALTIME_UUID);
+                req.type.uuid[1] = HI_UINT16(JUXTAPROFILE_LOCALTIME_UUID);
 
                 VOID GATT_DiscCharsByUUID(pMsg->connHandle, &req, selfEntity);
             }
@@ -2740,7 +2776,7 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
 // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
             MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
 
-// Store the handle of the simpleprofile characteristic 1 value
+// Store the handle of the LOCALTIME characteristic
             connList[connIndex].charHandle = BUILD_UINT16(
                     pMsg->msg.readByTypeRsp.pDataList[3],
                     pMsg->msg.readByTypeRsp.pDataList[4]);
@@ -2750,6 +2786,7 @@ static void multi_role_processGATTDiscEvent(gattMsgEvent_t *pMsg)
         }
 
         connList[connIndex].discState = BLE_DISC_STATE_IDLE;
+        multi_role_enqueueMsg(JUXTA_EVT_WRITE_GATT, NULL);
     }
 }
 
@@ -2979,6 +3016,7 @@ static uint8_t multi_role_addConnInfo(uint16_t connHandle, uint8_t *pAddr,
 // Found available entry to put a new connection info in
             connList[i].connHandle = connHandle;
             memcpy(connList[i].addr, pAddr, B_ADDR_LEN);
+            connList[i].role = role;
             numConn++;
 
 #ifdef DEFAULT_SEND_PARAM_UPDATE_REQ
@@ -3075,4 +3113,74 @@ static uint8_t multi_role_removeConnInfo(uint16_t connHandle)
     }
 
     return connIndex;
+}
+
+bool multi_role_doConnect(uint8_t index)
+{
+    // Temporarily disable advertising
+    doAdvertise(JUXTA_ADV_DISABLE);
+    GapInit_connect(scanList[index].addrType & MASK_ADDRTYPE_ID,
+                    scanList[index].addr, mrInitPhy,
+                    JUXTA_CONN_ATTEMPT_TIMEOUT);
+    // Re-enable advertising
+    if (iAdv > 0) // suggests it was advertising
+    {
+        doAdvertise(JUXTA_ADV_ONCE);
+    }
+//  Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "Connecting...");
+    return (true);
+}
+
+bool multi_role_doGattRead(void)
+{
+    attReadReq_t req;
+    uint8_t connIndex = multi_role_getConnIndex(mrConnHandle);
+
+    // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
+    MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
+
+    req.handle = connList[connIndex].charHandle;
+    GATT_ReadCharValue(mrConnHandle, &req, selfEntity);
+
+    return (true);
+}
+
+bool multi_role_doGattWrite(void)
+{
+    status_t status;
+    uint32_t localTime = Seconds_get();
+    attWriteReq_t req;
+
+    req.pValue = GATT_bm_alloc(mrConnHandle, ATT_WRITE_REQ, sizeof(localTime),
+    NULL);
+
+    if (req.pValue != NULL)
+    {
+        uint8_t connIndex = multi_role_getConnIndex(mrConnHandle);
+
+        // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
+        MULTIROLE_ASSERT(connIndex < MAX_NUM_BLE_CONNS);
+
+        req.handle = connList[connIndex].charHandle;
+        req.len = sizeof(localTime);
+        memcpy(&localTime, req.pValue, sizeof(localTime));
+//    req.pValue[0] = charVal;
+        req.sig = 0;
+        req.cmd = 0;
+
+        status = GATT_WriteCharValue(mrConnHandle, &req, selfEntity);
+        if (status != SUCCESS)
+        {
+            GATT_bm_free((gattMsg_t*) &req, ATT_WRITE_REQ);
+        }
+    }
+
+    return (true);
+}
+
+bool multi_role_doDisconnect(void)
+{
+    // Disconnect
+    GAP_TerminateLinkReq(mrConnHandle, HCI_DISCONNECT_REMOTE_USER_TERM);
+    return (true);
 }

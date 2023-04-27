@@ -71,51 +71,6 @@ extern "C"
  */
 extern void multi_role_createTask(void);
 
-/* Action for Menu: Enable Scanning */
-bool multi_role_doDiscoverDevices(uint8_t index);
-
-/* Action for Menu: Disable Scanning */
-bool multi_role_doStopDiscovering(uint8_t index);
-
-/* Actions for Menu: Init - Connect */
-bool multi_role_doConnect(uint8 index);
-
-/* Action for Menu: Cancel Connecting */
-bool multi_role_doCancelConnecting(uint8_t index);
-
-/* Action for Menu: Select Connection */
-bool multi_role_doSelectConn(uint8_t index);
-
-bool multi_role_doAdvertise(uint8_t index);
-
-/* Action for Menu: GATT Read */
-bool multi_role_doGattRead(uint8_t index);
-
-/* Action for Menu: GATT Write */
-bool multi_role_doGattWrite(uint8_t index);
-
-/* Actions for Menu: Init - Conn Update */
-bool multi_role_doConnUpdate(uint8_t index);
-
-/* Actions for Menu: Init - Disconnect */
-bool multi_role_doDisconnect(uint8 index);
-
-/* Actions for Menu: Init - Advertise */
-bool mr_doAdvertise(uint8 index);
-
-/* Action for Menu: Set Scanning PHY */
-bool multi_role_doSetScanPhy(uint8_t index);
-
-/* Action for Menu: Set Advertising PHY */
-bool multi_role_doSetAdvPhy(uint8_t index);
-
-/* Action for Menu: Set Initialize PHY */
-bool multi_role_doSetInitPhy(uint8_t index);
-
-/* Action for Menu: Set Connection PHY */
-bool multi_role_doConnPhy(uint8_t index);
-
-
 /*********************************************************************
 *********************************************************************/
 
