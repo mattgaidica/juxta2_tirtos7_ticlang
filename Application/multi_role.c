@@ -60,7 +60,7 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230424";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230428";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
@@ -2193,9 +2193,9 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         GPIO_disableInt(INT_XL_1);
         GPIO_disableInt(INT_XL_2);
         logMetaData(JUXTA_DATATYPE_CONN, 0, localTime);
-        if (connList[0].role == GAP_PROFILE_CENTRAL) // contains role
+        if (connList[0].role == GAP_PROFILE_CENTRAL)
         {
-            mrConnHandle  = connList[0].connHandle;
+            mrConnHandle = connList[0].connHandle;
             multi_role_startSvcDiscovery();
             Util_startClock(&clkJuxtaCentralTimeout);
         }
@@ -3163,8 +3163,7 @@ bool multi_role_doGattWrite(void)
 
         req.handle = connList[connIndex].charHandle;
         req.len = sizeof(localTime);
-        memcpy(&localTime, req.pValue, sizeof(localTime));
-//    req.pValue[0] = charVal;
+        memcpy(req.pValue, &localTime, sizeof(localTime));
         req.sig = 0;
         req.cmd = 0;
 
@@ -3172,6 +3171,11 @@ bool multi_role_doGattWrite(void)
         if (status != SUCCESS)
         {
             GATT_bm_free((gattMsg_t*) &req, ATT_WRITE_REQ);
+            multi_role_enqueueMsg(JUXTA_EVT_WRITE_GATT, NULL); // try again
+        }
+        else
+        {
+            multi_role_enqueueMsg(JUXTA_EVT_CENTRAL_TIMEOUT, NULL);
         }
     }
 
