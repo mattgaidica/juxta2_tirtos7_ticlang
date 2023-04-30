@@ -489,7 +489,7 @@ static void multi_role_clockHandler(UArg arg);
 static uint8_t multi_role_clearConnListEntry(uint16_t connHandle);
 #if (DEFAULT_DEV_DISC_BY_SVC_UUID == TRUE)
 static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
-                                   int8_t rssi, bool requestTime);
+                                   int8_t rssi, uint16_t requestTime);
 static bool multi_role_findSvcUuid(uint16_t uuid, uint8_t *pData,
                                    uint16_t dataLen);
 #endif // DEFAULT_DEV_DISC_BY_SVC_UUID
@@ -1293,12 +1293,13 @@ static void multi_role_init(void)
     isBase = !GPIO_read(BASE_GPIO);
     GPIO_setConfig(BASE_GPIO, basePinConfig[0]); // remove pull-up to decrease power consumption
 
-    if (isBase) // no sleep for base
-    {
-        Power_setConstraint(PowerCC26XX_SD_DISALLOW);
-        Power_setConstraint(PowerCC26XX_SB_DISALLOW);
-        Power_setConstraint(PowerCC26XX_IDLE_PD_DISALLOW);
-    }
+//    if (isBase) // no sleep for base
+//    {
+//        Power_setConstraint(PowerCC26XX_SD_DISALLOW);
+//        Power_setConstraint(PowerCC26XX_SB_DISALLOW);
+//        Power_setConstraint(PowerCC26XX_IDLE_PD_DISALLOW);
+//        Power_setDependency(PowerCC26XX_XOSC_HF); // ????
+//    }
 
     ADC_init();
     ADC_Params_init(&adcParams_vBatt);
@@ -1327,7 +1328,6 @@ static void multi_role_init(void)
     memcpy(attDeviceName + 1, pStrAddr, 12); // include J at start
     juxtaSetAdvData(advData1, sizeof(advData1), (void*) attDeviceName,
     GAP_ADTYPE_LOCAL_NAME_COMPLETE);
-    juxtaRequestTime(true); // for all devices
 
     NVS_init();
     nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
@@ -1579,6 +1579,7 @@ static void multi_role_init(void)
     {
         HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_5_DBM);
     }
+    juxtaRequestTime(true); // do after advertise is setup, for all devices
     shutdownLEDs();
 }
 
@@ -2598,14 +2599,15 @@ static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
         {
             if (memcmp(pAddr, scanList[i].addr, B_ADDR_LEN) == 0)
             {
-                return;
+                scanList[i].requestTime = requestTime; // update
+                return; // values are equal, do not increment
             }
         }
 
         memcpy(scanList[numScanRes].addr, pAddr, B_ADDR_LEN);
         scanList[numScanRes].addrType = addrType;
         scanList[numScanRes].rssi = rssi;
-        scanList[numScanRes].requestTime = requestTime;
+        scanList[numScanRes].rssi = requestTime;
         numScanRes++;
     }
 }
