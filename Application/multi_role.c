@@ -60,7 +60,7 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230501";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230502";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
@@ -361,7 +361,8 @@ typedef enum
     JUXTA_DATATYPE_VBATT,
     JUXTA_DATATYPE_TEMP,
     JUXTA_DATATYPE_MODE,
-    JUXTA_DATATYPE_TIME_SYNC
+    JUXTA_DATATYPE_TIME_SYNC,
+    JUXTA_DATATYPE_IS_BASE
 } juxtaDatatypes_t;
 
 typedef enum
@@ -421,7 +422,7 @@ static int16_t data_raw_magnetic[3];
 static int16_t data_raw_temperature;
 static float acceleration_mg[3];
 static float magnetic_mG[3];
-static float temperature_degC;
+static float temperature_degC = 0;
 static uint8_t whoamI, rst;
 
 typedef struct
@@ -1251,82 +1252,8 @@ static void logScan(void) // called after MR_EVT_ADV_REPORT -> multi_role_addSca
     }
 }
 
-// *** TI CODE ***
-static void multi_role_spin(void)
+static void axyInit(void)
 {
-    volatile uint8_t x = 0;
-
-    while (1)
-    {
-        x++;
-    }
-}
-
-void multi_role_createTask(void)
-{
-    Task_Params taskParams;
-// Configure task
-    Task_Params_init(&taskParams);
-    taskParams.stack = mrTaskStack;
-    taskParams.stackSize = MR_TASK_STACK_SIZE;
-    taskParams.priority = MR_TASK_PRIORITY;
-    Task_construct(&mrTask, multi_role_taskFxn, &taskParams, NULL);
-}
-
-static void multi_role_init(void)
-{
-    GPIO_write(LED1, 1);
-
-// https://dev.ti.com/tirex/explore/node?node=A__AFqGfTyW2A4kyl8oykWk8Q__com.ti.SIMPLELINK_CC13XX_CC26XX_SDK__BSEc4rl__6.20.00.29
-    Seconds_set(0);
-
-    isBase = !GPIO_read(BASE_GPIO);
-    GPIO_setConfig(BASE_GPIO, basePinConfig[0]); // remove pull-up to decrease power consumption
-
-    if (isBase) // no sleep for base
-    {
-        OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_XOSC_HF);
-        while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_XOSC_HF)
-            ;
-    }
-
-    ADC_init();
-    ADC_Params_init(&adcParams_vBatt);
-    adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
-    setVoltage();
-// danger zone, undefined behavior, just blink
-    if (vbatt < VDROPOUT)
-    {
-        while (1)
-        {
-            GPIO_toggle(LED1);
-            usleep(50000);
-        }
-    }
-
-// swap address to include BLE MAC address (unique for each device)
-    uint64_t bleAddress = *((uint64_t*) (FCFG1_BASE + FCFG1_O_MAC_BLE_0))
-            & 0xFFFFFFFFFFFF;
-    uint8_t bleArr[6], i;
-    for (i = 0; i < sizeof(bleArr); i++)
-    {
-        bleArr[i] = bleAddress >> 8 * i;
-    }
-    char *pStrAddr = Util_convertBdAddr2Str(bleArr); // size 13, includes 1 end char
-    memset(attDeviceName + 1, 0, GAP_DEVICE_NAME_LEN - 1); // clean
-    memcpy(attDeviceName + 1, pStrAddr, 12); // include J at start
-    juxtaSetAdvData(advData1, sizeof(advData1), (void*) attDeviceName,
-    GAP_ADTYPE_LOCAL_NAME_COMPLETE);
-
-    NVS_init();
-    nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
-// note: this has to be in 3-wire mode so CS is manually controlled
-    SPI_init();
-    SPI_Params_init(&spiParams);
-    SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
-    has_NAND = NAND_Init();
-    loadConfigs(); // comes after NAND to fill recovery buffer
-
     dev_ctx_xl.write_reg = platform_write;
     dev_ctx_xl.read_reg = platform_read;
     dev_ctx_xl.handle = (void*) &xl_bus;
@@ -1365,7 +1292,7 @@ static void multi_role_init(void)
     lsm303agr_temperature_meas_set(&dev_ctx_xl, LSM303AGR_TEMP_ENABLE); // LSM303AGR_TEMP_ENABLE
     lsm303agr_xl_operating_mode_set(&dev_ctx_xl, LSM303AGR_HR_12bit);
 
-// INT1 config see AN4825 pg.37
+    // INT1 config see AN4825 pg.37
     lsm303agr_xl_high_pass_int_conf_set(&dev_ctx_xl, LSM303AGR_ON_INT1_GEN); // CTRL_REG2_A
     lsm303agr_xl_high_pass_mode_set(&dev_ctx_xl, LSM303AGR_NORMAL_WITH_RST); // CTRL_REG2_A - LSM303AGR_AUTORST_ON_INT
     lsm303agr_xl_high_pass_on_outputs_set(&dev_ctx_xl,
@@ -1389,7 +1316,7 @@ static void multi_role_init(void)
     lsm303agr_xl_int1_gen_conf_set(&dev_ctx_xl, &int1_cfg_a); // INT1_CFG_A
     lsm303agr_int1_src_a_t int1_src_reg_a;
 
-// INT2 config
+    // INT2 config
     lsm303agr_int2_cfg_a_t int2_cfg_a = { 0 };
     int2_cfg_a.aoi = 1; // 6-direction position recognition
     int2_cfg_a._6d = 1;
@@ -1405,26 +1332,105 @@ static void multi_role_init(void)
     ctrl_reg6_a.i2_int2 = 1; // enables interrupt 2 function on INT2 pin
     lsm303agr_xl_pin_int2_config_set(&dev_ctx_xl, &ctrl_reg6_a); // CTRL_REG6_A
 
-// MG SECTION
+    // MG SECTION
     lsm303agr_mag_block_data_update_set(&dev_ctx_mg, PROPERTY_ENABLE);
     lsm303agr_mag_data_rate_set(&dev_ctx_mg, LSM303AGR_MG_ODR_10Hz);
     lsm303agr_mag_power_mode_set(&dev_ctx_mg, LSM303AGR_LOW_POWER);
     /* Set / Reset magnetic sensor mode */
     lsm303agr_mag_set_rst_mode_set(&dev_ctx_mg,
                                    LSM303AGR_SET_SENS_ONLY_AT_POWER_ON);
-// LSM303AGR_POWER_DOWN, LSM303AGR_SINGLE_TRIGGER, LSM303AGR_CONTINUOUS_MODE
+    // LSM303AGR_POWER_DOWN, LSM303AGR_SINGLE_TRIGGER, LSM303AGR_CONTINUOUS_MODE
     lsm303agr_mag_operating_mode_set(&dev_ctx_mg, LSM303AGR_POWER_DOWN);
-//    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
-//    lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
-//// setup mg interrupt
-//    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
-//    lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
-//    int_ctrl_reg.iel = 1; // latch
-//    int_ctrl_reg.ien = 1; // enable int
-//    int_ctrl_reg.xien = 1; // axis enabled
-//    int_ctrl_reg.yien = 1; // axis enabled
-//    int_ctrl_reg.zien = 1; // axis enabled
-//    lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
+    //    lsm303agr_mag_drdy_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+    //    lsm303agr_mag_int_on_pin_set(&dev_ctx_mg, PROPERTY_ENABLE);
+    //// setup mg interrupt
+    //    lsm303agr_mag_int_gen_treshold_set(&dev_ctx_mg, INT_THRESHOLD_MG);
+    //    lsm303agr_int_crtl_reg_m_t int_ctrl_reg = { 0 };
+    //    int_ctrl_reg.iel = 1; // latch
+    //    int_ctrl_reg.ien = 1; // enable int
+    //    int_ctrl_reg.xien = 1; // axis enabled
+    //    int_ctrl_reg.yien = 1; // axis enabled
+    //    int_ctrl_reg.zien = 1; // axis enabled
+    //    lsm303agr_mag_int_gen_conf_set(&dev_ctx_mg, &int_ctrl_reg);
+}
+
+// *** TI CODE ***
+static void multi_role_spin(void)
+{
+    volatile uint8_t x = 0;
+
+    while (1)
+    {
+        x++;
+    }
+}
+
+void multi_role_createTask(void)
+{
+    Task_Params taskParams;
+// Configure task
+    Task_Params_init(&taskParams);
+    taskParams.stack = mrTaskStack;
+    taskParams.stackSize = MR_TASK_STACK_SIZE;
+    taskParams.priority = MR_TASK_PRIORITY;
+    Task_construct(&mrTask, multi_role_taskFxn, &taskParams, NULL);
+}
+
+static void multi_role_init(void)
+{
+    GPIO_write(LED1, 1);
+
+// https://dev.ti.com/tirex/explore/node?node=A__AFqGfTyW2A4kyl8oykWk8Q__com.ti.SIMPLELINK_CC13XX_CC26XX_SDK__BSEc4rl__6.20.00.29
+    Seconds_set(0);
+
+    isBase = !GPIO_read(BASE_GPIO);
+    GPIO_setConfig(BASE_GPIO, basePinConfig[0]); // remove pull-up to decrease power consumption
+
+    ADC_init();
+    ADC_Params_init(&adcParams_vBatt);
+    adc_vBatt = ADC_open(CONFIG_ADC_VBATT, &adcParams_vBatt);
+    setVoltage();
+// danger zone, undefined behavior, just blink
+    if (vbatt < VDROPOUT)
+    {
+        while (1)
+        {
+            GPIO_toggle(LED1);
+            usleep(50000);
+        }
+    }
+
+// swap address to include BLE MAC address (unique for each device)
+    uint64_t bleAddress = *((uint64_t*) (FCFG1_BASE + FCFG1_O_MAC_BLE_0))
+            & 0xFFFFFFFFFFFF;
+    uint8_t bleArr[6], i;
+    for (i = 0; i < sizeof(bleArr); i++)
+    {
+        bleArr[i] = bleAddress >> 8 * i;
+    }
+    char *pStrAddr = Util_convertBdAddr2Str(bleArr); // size 13, includes 1 end char
+    memset(attDeviceName + 1, 0, GAP_DEVICE_NAME_LEN - 1); // clean
+    memcpy(attDeviceName + 1, pStrAddr, 12); // include J at start
+    juxtaSetAdvData(advData1, sizeof(advData1), (void*) attDeviceName,
+    GAP_ADTYPE_LOCAL_NAME_COMPLETE);
+
+    NVS_init();
+    nvsConfigHandle = NVS_open(NVS_JUXTA_CONFIG, NULL);
+// note: this has to be in 3-wire mode so CS is manually controlled
+    SPI_init();
+    SPI_Params_init(&spiParams);
+    SPI_MEM_handle = SPI_open(SPI_MEM_CONFIG, &spiParams);
+    has_NAND = NAND_Init();
+    loadConfigs(); // comes after NAND to fill recovery buffer
+
+    // try to avoid rare temperature bug
+    while(true) {
+        axyInit();
+        setTemp();
+        if (temperature_degC > 0 && temperature_degC < 40) {
+            break;
+        }
+    }
 
     BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- init ", MR_TASK_PRIORITY);
 // ******************************************************************
@@ -1570,6 +1576,8 @@ static void multi_role_init(void)
     {
         HCI_EXT_SetTxPowerCmd(HCI_EXT_TX_POWER_5_DBM);
     }
+    logMetaData(JUXTA_DATATYPE_MODE, juxtaMode, localTime);
+    logMetaData(JUXTA_DATATYPE_IS_BASE, isBase, localTime);
     juxtaRequestTime(true); // do after advertise is setup, for all devices
     shutdownLEDs();
 }
@@ -1756,13 +1764,6 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         uint8_t connIndex;
 //        uint8_t *pStrAddr;
 
-        if (isBase) // go back to RCOSC for connection
-        {
-            OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_RCOSC_LF);
-            while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_RCOSC_LF)
-                ;
-        }
-
 // Add this connection info to the list
         connIndex = multi_role_addConnInfo(connHandle, pAddr, role);
 // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
@@ -1780,13 +1781,6 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
                 ((gapTerminateLinkEvent_t*) pMsg)->connectionHandle;
         uint8_t connIndex;
 //        uint8_t *pStrAddr;
-
-        if (isBase) // back to HF
-        {
-            OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_XOSC_HF);
-            while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_XOSC_HF)
-                ;
-        }
 
         BLE_LOG_INT_STR(0, BLE_LOG_MODULE_APP, "APP : GAP msg: status=%d, opcode=%s\n", 0, "GAP_LINK_TERMINATED_EVENT");
 // Mark this connection deleted in the connected device list.
@@ -1845,20 +1839,8 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         linkDBInfo_t linkInfo;
         if (linkDB_GetInfo(pPkt->connectionHandle, &linkInfo) == SUCCESS)
         {
-
             if (pPkt->status == SUCCESS)
             {
-//            Display_printf(dispHandle, MR_ROW_CUR_CONN, 0,
-//                          "Updated: %s, connTimeout:%d",
-//                           Util_convertBdAddr2Str(linkInfo.addr),
-//                           linkInfo.connTimeout*CONN_TIMEOUT_MS_CONVERSION);
-            }
-            else
-            {
-                // Display the address of the connection update failure
-//            Display_printf(dispHandle, MR_ROW_CUR_CONN, 0,
-//                           "Update Failed 0x%h: %s", pPkt->opcode,
-//                           Util_convertBdAddr2Str(linkInfo.addr));
             }
         }
 // Check if there are any queued parameter updates
@@ -1868,30 +1850,10 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         {
 // Attempt to send queued update now
             multi_role_processParamUpdate(connHandleEntry->connHandle);
-
-// Free list element
             ICall_free(connHandleEntry);
         }
         break;
     }
-
-#if defined ( NOTIFY_PARAM_UPDATE_RJCT )
-     case GAP_LINK_PARAM_UPDATE_REJECT_EVENT:
-     {
-       linkDBInfo_t linkInfo;
-       gapLinkUpdateEvent_t *pPkt = (gapLinkUpdateEvent_t *)pMsg;
-
-       // Get the address from the connection handle
-       linkDB_GetInfo(pPkt->connectionHandle, &linkInfo);
-
-       // Display the address of the connection update failure
-//       Display_printf(dispHandle, MR_ROW_CUR_CONN, 0,
-//                      "Peer Device's Update Request Rejected 0x%h: %s", pPkt->opcode,
-//                      Util_convertBdAddr2Str(linkInfo.addr));
-
-       break;
-     }
-#endif
 
     default:
         break;
@@ -2229,51 +2191,52 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             break;
         }
         setVoltage();
-        bool forceSave = true; // !! might be too often
+        localTime = Seconds_get();
+        bool forceSave = false; // !! might be too often
         if (vbatt < VDROPOUT && juxtaMode != JUXTA_MODE_SHELF)
         {
             juxtaMode = JUXTA_MODE_SHELF;
             getJuxtaOptions(); // updates juxtaOptions characteristic
             forceSave = true;
+            logMetaData(JUXTA_DATATYPE_MODE, juxtaMode, localTime);
             multi_role_enqueueMsg(JUXTA_EVT_DISCONNECTED, NULL); // simulate to engage juxtaMode
             break;
         }
 
-        localTime = Seconds_get();
-        // assume that once base is set once it can go until battery dies without update
-        if (localTime - lastTimeUpdate > REQUEST_TIME_EVERY && !isBase)
+        // shelf mode does not log any data or do expensive operations
+        if (juxtaMode != JUXTA_MODE_SHELF || forceSave)
         {
-            juxtaRequestTime(true); // logger device
-        }
+            // assume that once base is set once it can go until battery dies without update
+            if (localTime - lastTimeUpdate > REQUEST_TIME_EVERY && !isBase)
+            {
+                juxtaRequestTime(true); // logger device
+            }
 
-        // shelf mode does not log any data
-        if (juxtaMode != JUXTA_MODE_SHELF)
-        {
             setTemp();
             logMetaData(JUXTA_DATATYPE_TEMP, temperature_degC, localTime);
             logMetaData(JUXTA_DATATYPE_VBATT, vbatt, localTime);
-        }
 
-        if (forceSave && has_NAND)
-        {
-            uint32_t restoreLogAddr = logAddr;
-            uint32_t restoreMetaAddr = metaAddr;
-            ReturnType ret;
-            uint8_t none = 0xFF;
-            while (1)
+            if (has_NAND)
             {
-                ret = NAND_Write(&logAddr, logBuffer, &none, 1);
-                if (ret == Flash_Success)
-                    break;
+                uint32_t restoreLogAddr = logAddr;
+                uint32_t restoreMetaAddr = metaAddr;
+                ReturnType ret;
+                uint8_t none = 0xFF;
+                while (1)
+                {
+                    ret = NAND_Write(&logAddr, logBuffer, &none, 1);
+                    if (ret == Flash_Success)
+                        break;
+                }
+                logAddr = restoreLogAddr; // put addr back to where it was
+                while (1)
+                {
+                    ret = NAND_Write(&metaAddr, metaBuffer, &none, 1);
+                    if (ret == Flash_Success)
+                        break;
+                }
+                metaAddr = restoreMetaAddr; // put addr back to where it was
             }
-            logAddr = restoreLogAddr; // put addr back to where it was
-            while (1)
-            {
-                ret = NAND_Write(&metaAddr, metaBuffer, &none, 1);
-                if (ret == Flash_Success)
-                    break;
-            }
-            metaAddr = restoreMetaAddr; // put addr back to where it was
         }
 
         // see dumpData to fill memory
@@ -2290,7 +2253,8 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
             nScanRes = 0;
         }
 
-        uint32_t randNum = rand() % 501; // jitter up to 200ms
+        // add jitter, mitigates 2 nearby devices perfectly unaligned
+        uint32_t randNum = rand() % 501;
         Util_restartClock(&clkJuxtaIntervalMode, juxtaScanInterval + randNum);
         doScan(JUXTA_SCAN_ONCE);
         break;
@@ -2701,6 +2665,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         localTime++; // accounts for transmission delay
         Seconds_set(localTime);
         lastTimeUpdate = localTime;
+        logMetaData(JUXTA_DATATYPE_TIME_SYNC, 0, localTime);
         juxtaRequestTime(false); // SUBHZ will turn it back on
         break;
     case JUXTAPROFILE_ADVMODE: // ADVERTISE MODE
