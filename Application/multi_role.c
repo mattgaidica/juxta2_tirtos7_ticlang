@@ -60,7 +60,7 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230428";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230501";
 #define INT_THRESHOLD_MG    1000
 #define INT_THRESHOLD_XL1   0x06
 #define INT_DURATION_XL     0
@@ -95,7 +95,7 @@ typedef enum
 } juxtaConfigOffsets_t;
 
 // Timing
-#define JUXTA_LED_TIMEOUT_PERIOD        100 // ms
+#define JUXTA_LED_TIMEOUT_PERIOD        50 // ms
 #define LSM303AGR_BOOT_TIME             5 // ms
 #define SPI_HALF_PERIOD                 1 // 1us, Fs = 500kHz
 #define JUXTA_1HZ_PERIOD                1000 // ms
@@ -103,9 +103,9 @@ typedef enum
 #define JUXTA_STARTUP_TIMEOUT           100 // ms
 #define JUXTA_6D_SHAKE_TO_WAKE_AFTER    10 // s
 #define JUXTA_CENTRAL_TIMEOUT           5000 // ms
-#define JUXTA_CONN_ATTEMPT_TIMEOUT      2000 // ms
+#define JUXTA_CONN_ATTEMPT_TIMEOUT      4000 // ms, should be >> advertising interval
 #define REQUEST_TIME_EVERY              86400 // s
-#define MAX_TIME_UPDATES                5 // peripherals, also limited by DEFAULT_MAX_SCAN_RES
+#define JUXTA_INT_TIMEOUT               1000 * 60 // ms
 
 // Application events
 #define MR_EVT_CHAR_CHANGE         1
@@ -359,8 +359,20 @@ typedef enum
     JUXTA_DATATYPE_MG,
     JUXTA_DATATYPE_CONN,
     JUXTA_DATATYPE_VBATT,
-    JUXTA_DATATYPE_TEMP
+    JUXTA_DATATYPE_TEMP,
+    JUXTA_DATATYPE_MODE,
+    JUXTA_DATATYPE_TIME_SYNC
 } juxtaDatatypes_t;
+
+typedef enum
+{
+    JUXTA_OPT_MODE,
+    JUXTA_OPT_BASE,
+    JUXTA_OPT_ADV_EVERY_0,
+    JUXTA_OPT_ADV_EVERY_1,
+    JUXTA_OPT_SCAN_EVERY_0,
+    JUXTA_OPT_SCAN_EVERY_1
+} juxtaOptions_t;
 
 static uint32_t lastXLIntTime, lastMGIntTime;
 
@@ -375,17 +387,16 @@ typedef enum
 static uint8_t juxtaMode;
 static bool scanInitDone = false;
 static bool advertInitDone = false;
-static uint8_t iAdv = 0, iScan = 0;
 static uint32_t localTime = 0;
-static uint8_t numScanResRequireTime = 0;
-static uint8_t reqireTimeIndex = 0;
+static uint8_t nScanRes = 0;
 
-static uint8_t advScanIterations;
-static uint32_t advScanIterations_table[4] = { 1, 2, 5, 10 };
-static uint32_t juxtaModuloInterval;
-static uint32_t juxtaModuloInterval_table[4] = { 20, 30, 60, 360 };
-static uint32_t juxtaIntTimeout = 1000 * 60; // default should never used though
-static uint32_t juxtaIntTimeout_table[2] = { 1000 * 60, 1000 * 10 };
+static uint32_t juxtaAdvInterval; // ms * 1.6
+static uint32_t juxtaAdvInterval_table[4] = { 1000 * 1.6, 2000 * 1.6, 5000
+                                                      * 1.6,
+                                              10000 * 1.6 };
+static uint32_t juxtaScanInterval;
+static uint32_t juxtaScanInterval_table[4] = { 10 * 1000, 20 * 1000, 30 * 1000,
+                                               60 * 1000 };
 
 typedef enum
 {
@@ -530,7 +541,8 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
 static void setXL(void);
 static void setMag(void);
 static void setTemp(void);
-void intXL(uint_least8_t index); // not static for SysConfig
+void intXL1(uint_least8_t index); // not static for SysConfig
+void intXL2(uint_least8_t index); // not static for SysConfig
 void intMG(uint_least8_t index); // not static for SysConfig
 static void clearIntXL1(void);
 static void clearIntMG(void);
@@ -571,17 +583,15 @@ static gapBondCBs_t multi_role_BondMgrCBs = { multi_role_passcodeCB, // Passcode
  */
 static void juxtaTryTimeUpdate(void)
 {
-    for (uint8_t index = 0; index < numScanResRequireTime; index++)
+    for (uint8_t index = 0; index < DEFAULT_MAX_SCAN_RES; index++)
     {
-        if (scanList[index].requestTime)
+        if (scanList[index].requestTime == IS_REQUESTING_TIME)
         {
-            reqireTimeIndex--;
+            scanList[index].requestTime = IS_NOT_REQUESTING_TIME; // this will reset with every scan anyways
             multi_role_doConnect(index); // does GapInit_connect(scanList[index])...)
+            Util_startClock(&clkJuxtaTimeUpdateTimeout);
+            break;
         }
-    }
-    if (reqireTimeIndex > 0)
-    {
-        Util_startClock(&clkJuxtaTimeUpdateTimeout);
     }
 }
 
@@ -664,54 +674,37 @@ static void juxtaRequestTime(bool doRequest)
                         (void*) &IS_NOT_REQUESTING_TIME,
                         GAP_ADTYPE_APPEARANCE);
     }
+    doAdvertise(JUXTA_ADV_DISABLE);
     GapAdv_loadByHandle(advHandle, GAP_ADV_DATA_TYPE_ADV, sizeof(advData1),
                         advData1);
-}
-
-static void restartIntervalClock(void)
-{
-    localTime = Seconds_get();
-// next time localTime % juxtaModuloInterval == 0
-    uint32_t intervalTimeout = (juxtaModuloInterval
-            - localTime % juxtaModuloInterval) % juxtaModuloInterval;
-// this clock delays for the right modulo and sets period based on user settings
-    if (intervalTimeout == 0)
-    {
-        intervalTimeout = juxtaModuloInterval; // safeguard from restarting with immediate timeout
-    }
-    Util_restartClock(&clkJuxtaIntervalMode, intervalTimeout * 1000);
+    doAdvertise(JUXTA_ADV_FOREVER);
 }
 
 // could also make juxtaOptions a global
 static uint8_t getJuxtaOptions(void)
 {
-// encode
     uint8_t juxtaOptions = 0, k;
-// find current value in lookup table
-    juxtaOptions |= 0b00000011 & juxtaMode;
-    for (k = 0; k < sizeof(advScanIterations_table); k++)
-    {
-        if (advScanIterations == advScanIterations_table[k])
-        {
-            break;
-        }
-    }
-    juxtaOptions |= 0b00001100 & (k << 2);
-    for (k = 0; k < sizeof(juxtaModuloInterval_table); k++)
-    {
-        if (juxtaModuloInterval == juxtaModuloInterval_table[k])
-        {
-            break;
-        }
-    }
-    juxtaOptions |= 0b00110000 & (k << 4);
-    if (juxtaIntTimeout == juxtaIntTimeout_table[1])
-    {
-        juxtaOptions |= 0b01000000;
-    }
+    juxtaOptions |= 0b00000001 & juxtaMode;
     if (isBase)
     {
-        juxtaOptions |= 0b10000000;
+        juxtaOptions |= 0b00000010;
+    }
+// lookup tables
+    for (k = 0; k < sizeof(juxtaAdvInterval_table); k++)
+    {
+        if (juxtaAdvInterval == juxtaAdvInterval_table[k])
+        {
+            juxtaOptions |= 0b00001100 & (k << JUXTA_OPT_ADV_EVERY_0);
+            break;
+        }
+    }
+    for (k = 0; k < sizeof(juxtaScanInterval_table); k++)
+    {
+        if (juxtaScanInterval == juxtaScanInterval_table[k])
+        {
+            juxtaOptions |= 0b00110000 & (k << JUXTA_OPT_SCAN_EVERY_0);
+            break;
+        }
     }
     simpleProfile_SetParameter(JUXTAPROFILE_ADVMODE,
     JUXTAPROFILE_ADVMODE_LEN,
@@ -721,26 +714,14 @@ static uint8_t getJuxtaOptions(void)
 
 static void setJuxtaOptions(uint8_t juxtaOptions)
 {
-// decode
-    uint8_t k;
-    juxtaMode = 0b00000011 & juxtaOptions;
-    if (juxtaMode >= JUXTA_MODE_NUMEL)
-    {
-        juxtaMode = JUXTA_MODE_SHELF;
-    }
-    k = (0b00001100 & juxtaOptions) >> 2;
-    advScanIterations = advScanIterations_table[k];
-    k = (0b00110000 & juxtaOptions) >> 4;
-    juxtaModuloInterval = juxtaModuloInterval_table[k];
-    if ((0b01000000 & juxtaOptions) >> 6)
-    {
-        juxtaIntTimeout = juxtaIntTimeout_table[1];
-    }
-    else
-    {
-        juxtaIntTimeout = juxtaIntTimeout_table[0];
-    }
-// 0b10000000 = isBase, read only set at init
+    uint8_t k; // index
+    juxtaMode = 0b00000001 & juxtaOptions;
+// 0b00000010 = isBase, read-only
+    k = (0b00001100 & juxtaOptions) >> JUXTA_OPT_ADV_EVERY_0;
+    juxtaAdvInterval = juxtaAdvInterval_table[k];
+
+    k = (0b00110000 & juxtaOptions) >> JUXTA_OPT_SCAN_EVERY_0;
+    juxtaScanInterval = juxtaScanInterval_table[k];
 }
 
 // could test status, but not sure what to do with it
@@ -776,7 +757,6 @@ static void doScan(juxtaScanModes_t scanMode)
     if (scanMode == JUXTA_SCAN_ONCE)
     {
         GapScan_enable(0, DEFAULT_SCAN_DURATION, DEFAULT_MAX_SCAN_RES);
-        iScan--;
     }
     else
     {
@@ -790,7 +770,6 @@ static void doAdvertise(juxtaAdvModes_t advMode)
     {
         GapAdv_enable(advHandle, GAP_ADV_ENABLE_OPTIONS_USE_DURATION,
                       DEFAULT_SCAN_DURATION);
-        iAdv--;
     }
     else if (advMode == JUXTA_ADV_FOREVER)
     {
@@ -1180,6 +1159,17 @@ static void loadConfigs(void)
     metaRecoveryAddr = nvsConfigBuffer[JUXTA_CONFIG_OFFSET_METAADDR];
     uint8_t juxtaOptions = (uint8_t) nvsConfigBuffer[JUXTA_CONFIG_OFFSET_MODE];
     setJuxtaOptions(juxtaOptions);
+// !! override defaults
+    if (isBase)
+    {
+        juxtaAdvInterval = juxtaAdvInterval_table[0];
+        juxtaScanInterval = juxtaScanInterval_table[0];
+    }
+    else
+    {
+        juxtaAdvInterval = juxtaAdvInterval_table[1];
+        juxtaScanInterval = juxtaScanInterval_table[2];
+    }
 
 // convert back to uint8 arr
     memcpy(&juxtaProfile_subject,
@@ -1293,13 +1283,12 @@ static void multi_role_init(void)
     isBase = !GPIO_read(BASE_GPIO);
     GPIO_setConfig(BASE_GPIO, basePinConfig[0]); // remove pull-up to decrease power consumption
 
-//    if (isBase) // no sleep for base
-//    {
-//        Power_setConstraint(PowerCC26XX_SD_DISALLOW);
-//        Power_setConstraint(PowerCC26XX_SB_DISALLOW);
-//        Power_setConstraint(PowerCC26XX_IDLE_PD_DISALLOW);
-//        Power_setDependency(PowerCC26XX_XOSC_HF); // ????
-//    }
+    if (isBase) // no sleep for base
+    {
+        OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_XOSC_HF);
+        while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_XOSC_HF)
+            ;
+    }
 
     ADC_init();
     ADC_Params_init(&adcParams_vBatt);
@@ -1551,12 +1540,14 @@ static void multi_role_init(void)
                         (UArg) &argJuxtaIntervalMode);
 // one-shot to yoke XL logging sampling rate
     Util_constructClock(&clkJuxtaXLIntTimeout, multi_role_clockHandler,
-                        juxtaIntTimeout, 0,
+    JUXTA_INT_TIMEOUT,
+                        0,
                         false,
                         (UArg) &argJuxtaXLIntTimeout);
 // one-shot to yoke MG logging sampling rate
     Util_constructClock(&clkJuxtaMGIntTimeout, multi_role_clockHandler,
-                        juxtaIntTimeout, 0,
+    JUXTA_INT_TIMEOUT,
+                        0,
                         false,
                         (UArg) &argJuxtaMGIntTimeout);
     Util_constructClock(&clkJuxtaCentralTimeout, multi_role_clockHandler,
@@ -1765,6 +1756,13 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
         uint8_t connIndex;
 //        uint8_t *pStrAddr;
 
+        if (isBase) // go back to RCOSC for connection
+        {
+            OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_RCOSC_LF);
+            while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_RCOSC_LF)
+                ;
+        }
+
 // Add this connection info to the list
         connIndex = multi_role_addConnInfo(connHandle, pAddr, role);
 // connIndex cannot be equal to or greater than MAX_NUM_BLE_CONNS
@@ -1782,6 +1780,13 @@ static void multi_role_processGapMsg(gapEventHdr_t *pMsg)
                 ((gapTerminateLinkEvent_t*) pMsg)->connectionHandle;
         uint8_t connIndex;
 //        uint8_t *pStrAddr;
+
+        if (isBase) // back to HF
+        {
+            OSCClockSourceSet(OSC_SRC_CLK_LF, OSC_XOSC_HF);
+            while (OSCClockSourceGet(OSC_SRC_CLK_LF) != OSC_XOSC_HF)
+                ;
+        }
 
         BLE_LOG_INT_STR(0, BLE_LOG_MODULE_APP, "APP : GAP msg: status=%d, opcode=%s\n", 0, "GAP_LINK_TERMINATED_EVENT");
 // Mark this connection deleted in the connected device list.
@@ -2157,35 +2162,10 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         // do not update their time if my time is not accurate
         if (isBase && timeRequest == IS_NOT_REQUESTING_TIME)
         {
-            numScanResRequireTime = numScanRes; // save, cleared below
-            reqireTimeIndex = 0; // clear
-            for (int i = 0; i < numScanRes; i++)
-            {
-                if (scanList[i].requestTime)
-                {
-                    reqireTimeIndex++; // found one, exit
-                    if (reqireTimeIndex >= MAX_TIME_UPDATES)
-                    {
-                        break; // enough
-                    }
-                }
-            }
-            if (reqireTimeIndex > 0)
-            {
-                iScan = 0; // stop scanning and force logScan below
-                juxtaTryTimeUpdate(); // try right away
-                break;
-            }
+            juxtaTryTimeUpdate(); // try right away
         }
-        if (iScan == 0)
-        {
-            logScan();
-            numScanRes = 0;
-        }
-        else
-        {
-            doScan(JUXTA_SCAN_ONCE); // repeat
-        }
+        logScan();
+        numScanRes = 0;
         break;
     }
 
@@ -2300,14 +2280,18 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         break;
     }
 
-    case JUXTA_EVT_INTERVAL_MODE:
+    case JUXTA_EVT_INTERVAL_MODE: // entered by clock
     {
-        Util_stopClock(&clkJuxtaTimeUpdateTimeout); // stop trying to update (base only)
-        restartIntervalClock(); // always use current timestamp instead of relying on period
-        // kicks off scan/adv when entered
-        iScan = advScanIterations;
-        iAdv = advScanIterations;
-        doAdvertise(JUXTA_ADV_ONCE);
+        // if time update is running, stop it
+        if (isBase)
+        {
+            multi_role_enqueueMsg(JUXTA_EVT_CENTRAL_TIMEOUT, NULL); // cancel connection
+            Util_stopClock(&clkJuxtaTimeUpdateTimeout);
+            nScanRes = 0;
+        }
+
+        uint32_t randNum = rand() % 501; // jitter up to 200ms
+        Util_restartClock(&clkJuxtaIntervalMode, juxtaScanInterval + randNum);
         doScan(JUXTA_SCAN_ONCE);
         break;
     }
@@ -2323,8 +2307,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         GPIO_write(LED1, 1);
         doScan(JUXTA_SCAN_DISABLE);
         doAdvertise(JUXTA_ADV_DISABLE);
-        iScan = 0; // stop the loop
-        iAdv = 0; // stop the loop
         Util_stopClock(&clkJuxtaTimeUpdateTimeout); // connected within timeout
         Util_stopClock(&clkJuxtaIntervalMode);
         Util_stopClock(&clkJuxtaXLIntTimeout); // gets cleared at disconnect
@@ -2356,36 +2338,32 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         GPIO_write(LED1, 0);
         isConnected = false;
-        iScan = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
-        iAdv = 0; // only set by JUXTA_EVT_INTERVAL_MODE/JUXTA_EVT_INT_MG
         Util_stopClock(&clkJuxta1Hz);
         Util_stopClock(&clkJuxtaCentralTimeout);
-        if (juxtaMode == JUXTA_MODE_INTERVAL)
-        {
-            restartIntervalClock();
-        }
         clearIntXL1();
         GPIO_enableInt(INT_XL_1); // movement on, req for shake to wake
-        clearIntXL2();
-        GPIO_enableInt(INT_XL_2); // orientation
-        if (reqireTimeIndex > 0) // more work to do
+        GapAdv_setParam(advHandle, GAP_ADV_PARAM_PRIMARY_INTERVAL_MIN,
+                        &juxtaAdvInterval);
+        GapAdv_setParam(advHandle, GAP_ADV_PARAM_PRIMARY_INTERVAL_MIN,
+                        &juxtaAdvInterval);
+        doAdvertise(JUXTA_ADV_FOREVER);
+//        clearIntXL2();
+//        GPIO_enableInt(INT_XL_2); // orientation
+        multi_role_enqueueMsg(JUXTA_EVT_TIME_UPDATE, NULL);
+        if (juxtaMode == JUXTA_MODE_INTERVAL)
         {
-            multi_role_enqueueMsg(JUXTA_EVT_TIME_UPDATE, NULL);
+            Util_restartClock(&clkJuxtaIntervalMode, juxtaScanInterval);
         }
         break;
     }
 
     case JUXTA_EVT_INT_XL1:
     {
-//        if (Seconds_get() - lastXLIntTime > JUXTA_6D_SHAKE_TO_WAKE_AFTER)
-//        {
-//            clearIntXL2(); // make sure orientation can be detected
-//        }
         lastXLIntTime = Seconds_get();
         // protect intInterval
         if (!Util_isActive(&clkJuxtaXLIntTimeout))
         {
-            Util_restartClock(&clkJuxtaXLIntTimeout, juxtaIntTimeout); // controls logging
+            Util_restartClock(&clkJuxtaXLIntTimeout, JUXTA_INT_TIMEOUT); // controls logging
         }
         break;
     }
@@ -2399,18 +2377,6 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_INT_XL2:
     {
-        if (!isConnected && iAdv == 0) // ensures interval mode is not active
-        {
-            // turn off if device has not moved recently
-//            if (Seconds_get() - lastXLIntTime < JUXTA_6D_SHAKE_TO_WAKE_AFTER)
-//            {
-            timeoutLED(LED1);
-            iAdv = 1;
-            doAdvertise(JUXTA_ADV_ONCE); // XL2 is cleared here
-//            } else {
-//                clearIntXL1(); // make sure movement can be detected
-//            }
-        }
         break;
     }
 
@@ -2418,10 +2384,9 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
     {
         timeoutLED(LED1);
         lastMGIntTime = Seconds_get();
-        Util_restartClock(&clkJuxtaMGIntTimeout, juxtaIntTimeout); // controls logging
+        Util_restartClock(&clkJuxtaMGIntTimeout, JUXTA_INT_TIMEOUT); // controls logging
         if (!isConnected)
         {
-            iAdv = 1; // !! prob want more if this is an animal/station
             doAdvertise(JUXTA_ADV_ONCE); // clearIntMG() here
         }
         break;
@@ -2432,7 +2397,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         break;
     }
 
-    case JUXTA_EVT_CENTRAL_TIMEOUT:
+    case JUXTA_EVT_CENTRAL_TIMEOUT: // once connected
     {
         // this event is also called when gatt write is successful (not always timeout)
         Util_stopClock(&clkJuxtaCentralTimeout); // clock may be running
@@ -2446,7 +2411,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         break;
     }
 
-    case JUXTA_EVT_TIME_UPDATE:
+    case JUXTA_EVT_TIME_UPDATE: // when trying to connect
     {
         GapInit_cancelConnect();
         juxtaTryTimeUpdate();
@@ -2498,14 +2463,6 @@ static void multi_role_processAdvEvent(mrGapAdvEventData_t *pEventData)
 
         // Sent when an advertisement set is terminated due to a connection/duration ended
     case GAP_EVT_ADV_SET_TERMINATED:
-        if (iAdv > 0)
-        {
-            doAdvertise(JUXTA_ADV_ONCE); // repeat
-        }
-        else
-        {
-            clearIntXL2(); // safeguard from clearing during interval mode
-        }
         break;
 
     case GAP_EVT_INSUFFICIENT_MEMORY:
@@ -2607,7 +2564,7 @@ static void multi_role_addScanInfo(uint8_t *pAddr, uint8_t addrType,
         memcpy(scanList[numScanRes].addr, pAddr, B_ADDR_LEN);
         scanList[numScanRes].addrType = addrType;
         scanList[numScanRes].rssi = rssi;
-        scanList[numScanRes].rssi = requestTime;
+        scanList[numScanRes].requestTime = requestTime;
         numScanRes++;
     }
 }
@@ -2741,6 +2698,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
     case JUXTAPROFILE_LOCALTIME: // LOCAL TIME
         retProfile = simpleProfile_GetParameter(JUXTAPROFILE_LOCALTIME, pValue);
         memcpy(&localTime, pValue, sizeof(uint32_t));
+        localTime++; // accounts for transmission delay
         Seconds_set(localTime);
         lastTimeUpdate = localTime;
         juxtaRequestTime(false); // SUBHZ will turn it back on
@@ -3282,10 +3240,7 @@ bool multi_role_doConnect(uint8_t index)
     GapInit_connect(scanList[index].addrType & MASK_ADDRTYPE_ID,
                     scanList[index].addr, mrInitPhy, 0); // cancel with clkJuxtaTimeUpdateTimeout
 // Re-enable advertising
-    if (iAdv > 0) // suggests it was advertising
-    {
-        doAdvertise(JUXTA_ADV_ONCE);
-    }
+    doAdvertise(JUXTA_ADV_FOREVER);
 //  Display_printf(dispHandle, MR_ROW_NON_CONN, 0, "Connecting...");
     return (true);
 }
