@@ -1426,10 +1426,11 @@ static void multi_role_init(void)
     // try to avoid rare temperature bug
     while(true) {
         axyInit();
-        setTemp();
-        if (temperature_degC > 0 && temperature_degC < 40) {
-            break;
-        }
+//        setTemp();
+//        if (temperature_degC > 0 && temperature_degC < 40) {
+//            break;
+//        }
+        break;
     }
 
     BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- init ", MR_TASK_PRIORITY);
