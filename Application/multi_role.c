@@ -362,7 +362,9 @@ typedef enum
     JUXTA_DATATYPE_TEMP,
     JUXTA_DATATYPE_MODE,
     JUXTA_DATATYPE_TIME_SYNC,
-    JUXTA_DATATYPE_IS_BASE
+    JUXTA_DATATYPE_IS_BASE,
+    JUXTA_DATATYPE_RESET_LOGS,
+    JUXTA_DATATYPE_RESET_META
 } juxtaDatatypes_t;
 
 typedef enum
@@ -750,7 +752,8 @@ static void logMetaData(uint8_t dataType, float data, uint32_t lastTime)
     simpleProfile_SetParameter(JUXTAPROFILE_METACOUNT,
     JUXTAPROFILE_METACOUNT_LEN,
                                &metaCount);
-    setMetaRecovery(tempAddr, tempCount, ret); // if a page was written, commit these
+    // if a page was written, commit these (new metaCount is only in buffer)
+    setMetaRecovery(tempAddr, tempCount, ret);
 }
 
 static void doScan(juxtaScanModes_t scanMode)
@@ -1424,7 +1427,8 @@ static void multi_role_init(void)
     loadConfigs(); // comes after NAND to fill recovery buffer
 
     // try to avoid rare temperature bug
-    while(true) {
+    while (true)
+    {
         axyInit();
 //        setTemp();
 //        if (temperature_degC > 0 && temperature_degC < 40) {
@@ -1580,6 +1584,7 @@ static void multi_role_init(void)
     logMetaData(JUXTA_DATATYPE_MODE, juxtaMode, localTime);
     logMetaData(JUXTA_DATATYPE_IS_BASE, isBase, localTime);
     juxtaRequestTime(true); // do after advertise is setup, for all devices
+
     shutdownLEDs();
 }
 
@@ -2649,6 +2654,7 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         logRecoveryCount = 0;
         logAddr = JUXTA_BASE_LOGS;
         logRecoveryAddr = JUXTA_BASE_LOGS;
+        logMetaData(JUXTA_DATATYPE_RESET_LOGS, 0, localTime);
         saveConfigs();
         break;
     case JUXTAPROFILE_METACOUNT: // META COUNT
@@ -2658,6 +2664,9 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
         metaRecoveryCount = 0;
         metaAddr = JUXTA_BASE_META;
         metaRecoveryAddr = JUXTA_BASE_META;
+        logMetaData(JUXTA_DATATYPE_RESET_META, 0, localTime);
+        logMetaData(JUXTA_DATATYPE_MODE, juxtaMode, localTime);
+        logMetaData(JUXTA_DATATYPE_IS_BASE, isBase, localTime);
         saveConfigs();
         break;
     case JUXTAPROFILE_LOCALTIME: // LOCAL TIME
