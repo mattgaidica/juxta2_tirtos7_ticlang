@@ -60,9 +60,9 @@
 /*********************************************************************
  * CONSTANTS
  */
-static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230502";
+static uint8 JUXTA_VERSION[DEVINFO_STR_ATTR_LEN + 1] = "v230601";
 #define INT_THRESHOLD_MG    1000
-#define INT_THRESHOLD_XL1   0x06
+#define INT_THRESHOLD_XL1   0x10
 #define INT_DURATION_XL     0
 #define INT_DURATION_6D     0 // N/ODR
 #define INT_THRESHOLD_XL2   0x08 // 0x21 = ~45-degree angle
@@ -809,12 +809,13 @@ ReturnType NAND_Write(uAddrType *addr, uint8_t *buffer, uint8_t *data,
         // check if area needs to be erased
         if (ADDRESS_2_PAGE(*addr) == 0 && ADDRESS_2_COL(*addr) == 0) // 0th page in block, 0th col
         {
-            ret = FlashBlockErase(*addr); // wipe next 64 pages
-            if (ret != Flash_Success)
+            do
             {
-                return ret; // return early, !! but then what?
+                ret = FlashBlockErase(*addr); // wipe next 64 pages
             }
-            ret = Flash_ProgramFailed; // reset, return hereon should reflect FlashPageProgram()
+            while (ret != Flash_Success);
+
+            ret = Flash_ProgramFailed; // reset to reflect FlashPageProgram() below
         }
         *addr += 1;
         if (ADDRESS_2_COL(*addr) == PAGE_DATA_SIZE) // end of page/last col: write it
@@ -2210,7 +2211,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
         }
 
         // shelf mode does not log any data or do expensive operations
-        if (juxtaMode != JUXTA_MODE_SHELF || forceSave)
+        if (juxtaMode != JUXTA_MODE_SHELF || forceSave) // do if animal logger OR vbatt is low
         {
             // assume that once base is set once it can go until battery dies without update
             if (localTime - lastTimeUpdate > REQUEST_TIME_EVERY && !isBase)
