@@ -1182,37 +1182,37 @@ static void loadConfigs(void)
            sizeof(juxtaProfile_subject));
 
     uint32_t readAddr;
-    if (logRecoveryAddr < JUXTA_BASE_META)
-    {
-        logCount = logRecoveryCount;
-        logAddr = logRecoveryAddr;
-        readAddr = logRecoveryAddr;
-        readAddr &= 0xFFFFF000; // read from 0th column
-        FlashPageRead(readAddr, logBuffer);
-    }
-    else
-    {
-        logRecoveryCount = 0;
-        logCount = 0;
-        logRecoveryAddr = 0;
-        logAddr = 0;
-    }
+//    if (logRecoveryAddr < JUXTA_BASE_META)
+//    {
+    logCount = logRecoveryCount;
+    logAddr = logRecoveryAddr;
+    readAddr = logRecoveryAddr;
+    readAddr &= 0xFFFFF000; // read from 0th column
+    FlashPageRead(readAddr, logBuffer);
+//    }
+//    else
+//    {
+//        logRecoveryCount = 0;
+//        logCount = 0;
+//        logRecoveryAddr = 0;
+//        logAddr = 0;
+//    }
 
-    if (metaRecoveryAddr >= JUXTA_BASE_META && metaRecoveryAddr < FLASH_SIZE)
-    {
-        metaCount = metaRecoveryCount;
-        metaAddr = metaRecoveryAddr;
-        readAddr = metaRecoveryAddr;
-        readAddr &= 0xFFFFF000; // read from 0th column
-        FlashPageRead(readAddr, metaBuffer);
-    }
-    else
-    {
-        metaRecoveryCount = 0;
-        metaCount = 0;
-        metaRecoveryAddr = JUXTA_BASE_META;
-        metaAddr = JUXTA_BASE_META;
-    }
+//    if (metaRecoveryAddr >= JUXTA_BASE_META && metaRecoveryAddr < FLASH_SIZE)
+//    {
+    metaCount = metaRecoveryCount;
+    metaAddr = metaRecoveryAddr;
+    readAddr = metaRecoveryAddr;
+    readAddr &= 0xFFFFF000; // read from 0th column
+    FlashPageRead(readAddr, metaBuffer);
+//    }
+//    else
+//    {
+//        metaRecoveryCount = 0;
+//        metaCount = 0;
+//        metaRecoveryAddr = JUXTA_BASE_META;
+//        metaAddr = JUXTA_BASE_META;
+//    }
     saveConfigs(); // re-save
 }
 
@@ -1430,6 +1430,7 @@ static void multi_role_init(void)
     // try to avoid rare temperature bug
     while (true)
     {
+        GPIO_toggle(LED1);
         axyInit();
 //        setTemp();
 //        if (temperature_degC > 0 && temperature_degC < 40) {
@@ -1437,6 +1438,7 @@ static void multi_role_init(void)
 //        }
         break;
     }
+    GPIO_write(LED1, 1);
 
     BLE_LOG_INT_TIME(0, BLE_LOG_MODULE_APP, "APP : ---- init ", MR_TASK_PRIORITY);
 // ******************************************************************
@@ -1584,9 +1586,11 @@ static void multi_role_init(void)
     }
     logMetaData(JUXTA_DATATYPE_MODE, juxtaMode, localTime);
     logMetaData(JUXTA_DATATYPE_IS_BASE, isBase, localTime);
-    juxtaRequestTime(true); // do after advertise is setup, for all devices
 
-    shutdownLEDs();
+    uint8_t uuid[ATT_BT_UUID_SIZE] = { LO_UINT16(JUXTAPROFILE_SERV_UUID),
+                                       HI_UINT16(JUXTAPROFILE_SERV_UUID) };
+
+    juxtaRequestTime(true); // do after advertise is setup, for all devices
 }
 
 static void multi_role_taskFxn(UArg a0, UArg a1)
@@ -2651,20 +2655,28 @@ static void multi_role_processCharValueChangeEvt(uint8_t paramId)
     case JUXTAPROFILE_LOGCOUNT: // LOG COUNT
         retProfile = simpleProfile_GetParameter(JUXTAPROFILE_LOGCOUNT, pValue);
 // treat any write as erasing memory
-        logCount = 0;
-        logRecoveryCount = 0;
-        logAddr = JUXTA_BASE_LOGS;
-        logRecoveryAddr = JUXTA_BASE_LOGS;
+        memcpy(&logCount, pValue, sizeof(uint32_t));
+        logRecoveryCount = logCount;
+        uint32_t pageIndex_log = (logCount * JUXTA_LOG_ENTRY_SIZE)
+                / PAGE_DATA_SIZE;
+        uint32_t offset_log = (logCount * JUXTA_LOG_ENTRY_SIZE) % PAGE_DATA_SIZE;
+        logAddr = JUXTA_BASE_LOGS + pageIndex_log * 0x1000 + offset_log;
+        logRecoveryAddr = logAddr;
         logMetaData(JUXTA_DATATYPE_RESET_LOGS, 0, localTime);
         saveConfigs();
         break;
     case JUXTAPROFILE_METACOUNT: // META COUNT
         retProfile = simpleProfile_GetParameter(JUXTAPROFILE_METACOUNT, pValue);
 // treat any write as erasing memory
-        metaCount = 0;
-        metaRecoveryCount = 0;
-        metaAddr = JUXTA_BASE_META;
-        metaRecoveryAddr = JUXTA_BASE_META;
+        memcpy(&metaCount, pValue, sizeof(uint32_t));
+        metaRecoveryCount = metaCount;
+        uint32_t pageIndex_meta = (metaCount * JUXTA_META_ENTRY_SIZE)
+                / PAGE_DATA_SIZE;
+        uint32_t offset_meta = (metaCount * JUXTA_META_ENTRY_SIZE)
+                % PAGE_DATA_SIZE;
+        metaAddr = JUXTA_BASE_META + pageIndex_log * 0x1000 + offset_log;
+        ;
+        metaRecoveryAddr = metaAddr;
         logMetaData(JUXTA_DATATYPE_RESET_META, 0, localTime);
         logMetaData(JUXTA_DATATYPE_MODE, juxtaMode, localTime);
         logMetaData(JUXTA_DATATYPE_IS_BASE, isBase, localTime);
