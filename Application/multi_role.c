@@ -1068,6 +1068,7 @@ static void timeoutLED(uint8_t index)
 
 static void shutdownLEDs(void)
 {
+    GPIO_write(LED2, 0);
     GPIO_write(LED1, 0);
 }
 
@@ -1382,6 +1383,7 @@ void multi_role_createTask(void)
 
 static void multi_role_init(void)
 {
+    GPIO_write(LED2, 1);
     GPIO_write(LED1, 1);
 
 // https://dev.ti.com/tirex/explore/node?node=A__AFqGfTyW2A4kyl8oykWk8Q__com.ti.SIMPLELINK_CC13XX_CC26XX_SDK__BSEc4rl__6.20.00.29
@@ -2311,6 +2313,7 @@ static void multi_role_processAppMsg(mrEvt_t *pMsg)
 
     case JUXTA_EVT_DISCONNECTED:
     {
+        GPIO_write(LED2, 0);
         GPIO_write(LED1, 0);
         isConnected = false;
         Util_stopClock(&clkJuxta1Hz);
